@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "tailwindcss": "^4.0.14"
+  },
+  "scripts": {
+    "watch:css": "npx @tailwindcss/cli -i tailwind-input.css -o ./src/css/styles.css --watch",
+    "move-build-and-upload-frontend": "cd .. && if exist data rmdir /s /q data && mkdir data && xcopy /E /I /Y frontend\\src\\* data\\ && C:\\Users\\Gabin\\.platformio\\penv\\Scripts\\pio.exe run --target uploadfs"
+  }
+}

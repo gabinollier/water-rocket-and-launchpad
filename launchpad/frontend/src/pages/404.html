@@ -1,0 +1,118 @@
+
+<h1 class="text-xl font-bold">404 : la page demandée n'a pas été trouvée :/</h1>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TailwindCSS Accordion</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        
+        .accordion-content.open {
+            max-height: 500px; /* Adjust based on your content size */
+            transition: max-height 0.5s ease-in;
+        }
+        
+        .accordion-icon {
+            transition: transform 0.3s ease;
+        }
+        
+        .accordion-icon.open {
+            transform: rotate(180deg);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-2xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-gray-800">Tailwind Accordion</h1>
+        
+        <div class="bg-white rounded-lg shadow-md overflow-hidden divide-y divide-gray-200">
+            <!-- Accordion Item 1 -->
+            <div class="accordion-item">
+                <button class="accordion-header w-full px-6 py-4 flex justify-between items-center bg-white hover:bg-gray-50 focus:outline-none">
+                    <span class="text-lg font-medium text-gray-800">Section 1</span>
+                    <svg class="accordion-icon w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+                <div class="accordion-content px-6 bg-gray-50">
+                    <div class="py-4">
+                        <p class="text-gray-700">
+                            Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. 
+                            Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Accordion Item 2 -->
+            <div class="accordion-item">
+                <button class="accordion-header w-full px-6 py-4 flex justify-between items-center bg-white hover:bg-gray-50 focus:outline-none">
+                    <span class="text-lg font-medium text-gray-800">Section 2</span>
+                    <svg class="accordion-icon w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+                <div class="accordion-content px-6 bg-gray-50">
+                    <div class="py-4">
+                        <p class="text-gray-700">
+                            Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. 
+                            Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Accordion Item 3 -->
+            <div class="accordion-item">
+                <button class="accordion-header w-full px-6 py-4 flex justify-between items-center bg-white hover:bg-gray-50 focus:outline-none">
+                    <span class="text-lg font-medium text-gray-800">Section 3</span>
+                    <svg class="accordion-icon w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+                <div class="accordion-content px-6 bg-gray-50">
+                    <div class="py-4">
+                        <p class="text-gray-700">
+                            Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, 
+                            totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Add click event listeners to all accordion headers
+        document.querySelectorAll('.accordion-header').forEach(button => {
+            button.addEventListener('click', () => {
+                const accordionItem = button.parentElement;
+                const content = accordionItem.querySelector('.accordion-content');
+                const icon = button.querySelector('.accordion-icon');
+                
+                // Toggle the open class
+                content.classList.toggle('open');
+                icon.classList.toggle('open');
+                
+                // Close other accordion items (optional - for single open accordion)
+                if (content.classList.contains('open')) {
+                    document.querySelectorAll('.accordion-item').forEach(item => {
+                        if (item !== accordionItem) {
+                            item.querySelector('.accordion-content').classList.remove('open');
+                            item.querySelector('.accordion-icon').classList.remove('open');
+                        }
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
