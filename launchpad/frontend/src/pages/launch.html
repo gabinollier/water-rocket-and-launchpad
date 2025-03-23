@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rocket Launch Control</title>
+</head>
+<body class="text-gray-800">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Rocket Launch Control</h1>
+        
+        <!-- Status Bar -->
+        <div class="bg-white rounded-xl p-4 mb-8 shadow">
+            <div class="flex justify-between">
+                <div>
+                    <span class="text-gray-600">Rocket Lock Status:</span>
+                    <span id="lock-status" class="ml-2 font-semibold">Checking...</span>
+                </div>
+                <div>
+                    <span class="text-gray-600">Rocket Readiness:</span>
+                    <span id="rocket-readiness" class="ml-2 font-semibold">Checking...</span>
+                </div>
+                <button id="abort-button" class="hidden bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-full animate-pulse">
+                    ABORT
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 1: Setup Phase -->
+        <div id="setup-phase" class="launch-phase bg-white rounded-xl p-6 mb-8 shadow">
+            <h2 class="text-2xl font-bold mb-4 text-blue-700">Step 1: Fill and Pressurize</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-gray-700 mb-2">Water Volume (ml)</label>
+                    <input type="number" id="water-volume" class="w-full bg-white border border-gray-300 text-gray-800 rounded-lg px-4 py-2" value="250" min="50" max="1000">
+                    
+                    <label class="block text-gray-700 mt-4 mb-2">Pressure (PSI)</label>
+                    <input type="number" id="pressure" class="w-full bg-white border border-gray-300 text-gray-800 rounded-lg px-4 py-2" value="40" min="10" max="100">
+                    
+                    <button id="fill-button" class="mt-6 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow">
+                        Start Filling
+                    </button>
+                </div>
+                
+                <div>
+                    <div class="bg-white p-4 rounded-xl h-full flex flex-col justify-center shadow">
+                        <p class="text-center mb-4 text-gray-700">Ensure your rocket is properly placed and locked before filling.</p>
+                        <img src="../assets/rocket-placement.svg" alt="Rocket Placement Illustration" class="mx-auto h-48">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fill Confirmation Modal -->
+        <div id="fill-confirmation-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex justify-center items-center z-50 hidden">
+            <div class="bg-white p-6 rounded-xl max-w-md shadow-xl">
+                <h3 class="text-xl font-bold mb-4 text-blue-700">Safety Check</h3>
+                <p class="mb-4 text-gray-700">Please confirm the following safety measures:</p>
+                <div class="mb-4">
+                    <label class="flex items-center text-gray-700">
+                        <input type="checkbox" id="confirm-locked" class="mr-2">
+                        Rocket is properly locked in place
+                    </label>
+                </div>
+                <div class="mb-6">
+                    <label class="flex items-center text-gray-700">
+                        <input type="checkbox" id="confirm-cleared" class="mr-2">
+                        Launch area is clear of people and obstacles
+                    </label>
+                </div>
+                <div class="flex justify-end space-x-4">
+                    <button id="cancel-fill" class="bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded-xl">Cancel</button>
+                    <button id="confirm-fill" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl" disabled>Confirm</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: Filling Phase -->
+        <div id="filling-phase" class="launch-phase bg-white rounded-xl p-6 mb-8 shadow hidden">
+            <h2 class="text-2xl font-bold mb-4 text-blue-700">Step 2: Filling in Progress</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="text-lg font-semibold mb-3 text-gray-700">Water Level</h3>
+                    <div class="relative pt-1">
+                        <div class="flex mb-2 items-center justify-between">
+                            <div>
+                                <span id="water-volume-current" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full bg-blue-500 text-white">
+                                    0 ml
+                                </span>
+                            </div>
+                            <div>
+                                <span id="water-volume-target" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full bg-blue-100 text-blue-800">
+                                    250 ml
+                                </span>
+                            </div>
+                        </div>
+                        <div class="overflow-hidden h-6 mb-4 text-xs flex rounded-lg bg-blue-100">
+                            <div id="water-progress-bar" class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <h3 class="text-lg font-semibold mb-3 mt-6 text-gray-700">Pressure</h3>
+                    <div class="relative pt-1">
+                        <div class="flex mb-2 items-center justify-between">
+                            <div>
+                                <span id="pressure-current" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full bg-red-500 text-white">
+                                    0 PSI
+                                </span>
+                            </div>
+                            <div>
+                                <span id="pressure-target" class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full bg-red-100 text-red-800">
+                                    40 PSI
+                                </span>
+                            </div>
+                        </div>
+                        <div class="overflow-hidden h-6 mb-4 text-xs flex rounded-lg bg-red-100">
+                            <div id="pressure-progress-bar" class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-red-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="filling-status" class="mt-4 p-3 bg-gray-50 rounded-lg text-center shadow text-gray-700">
+                        Preparing filling sequence...
+                    </div>
+                </div>
+                
+                <div class="flex flex-col justify-center items-center">
+                    <div id="gauge-container" class="relative w-64 h-64">
+                        <!-- Gauge visuals will be rendered here -->
+                        <div class="absolute inset-0 flex items-center justify-center">
+                            <div class="text-center">
+                                <div id="current-pressure-display" class="text-4xl font-bold text-gray-800">0</div>
+                                <div class="text-gray-600">PSI</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Launch Phase -->
+        <div id="launch-phase" class="launch-phase bg-white rounded-xl p-6 mb-8 shadow hidden">
+            <h2 class="text-2xl font-bold mb-4 text-blue-700">Step 3: Launch Control</h2>
+            <div class="text-center mb-6">
+                <p class="mb-4 text-gray-700">Rocket is filled and pressurized. Ready for launch!</p>
+                <div class="mb-4 flex items-center justify-center">
+                    <label class="inline-flex items-center text-gray-700">
+                        <input type="checkbox" id="enable-countdown" class="form-checkbox">
+                        <span class="ml-2">Enable 5-second countdown</span>
+                    </label>
+                </div>
+                
+                <div id="countdown-display" class="hidden text-6xl font-bold mb-6 text-gray-800">5</div>
+                
+                <button id="launch-button" class="bg-red-600 hover:bg-red-700 text-white text-2xl font-bold py-6 px-12 rounded-2xl shadow-lg transform transition hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-300">
+                    LAUNCH ROCKET
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 4: Post-Launch Phase -->
+        <div id="post-launch-phase" class="launch-phase bg-white rounded-xl p-6 mb-8 shadow hidden">
+            <h2 class="text-2xl font-bold mb-4 text-blue-700">Step 4: Post-Launch</h2>
+            <div class="text-center">
+                <div id="waiting-reconnection" class="mb-6">
+                    <p class="mb-4 text-gray-700">Rocket has been launched! Waiting for reconnection...</p>
+                    <div class="loader mx-auto w-12 h-12 border-4 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
+                </div>
+                
+                <div id="data-transmission" class="mb-6 hidden">
+                    <p class="mb-4 text-gray-700">Rocket reconnected! Receiving flight data...</p>
+                    <div class="w-full bg-gray-200 rounded-lg h-2.5">
+                        <div id="data-progress" class="bg-green-600 h-2.5 rounded-lg" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div id="data-complete" class="mb-6 hidden">
+                    <p class="text-green-600 font-bold mb-4">✓ Flight data received successfully!</p>
+                    <a href="/flight-data" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl mt-4 shadow">
+                        View Flight Data
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

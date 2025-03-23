@@ -4,15 +4,15 @@
 
 This project involves the development of a water rocket system with onboard data collection capabilities and a remote control launchpad. The system consists of two main subsystems:
 
-1. **Rocket Subsystem**: An ESP32-based flight control system that monitors flight parameters, controls parachute deployment, and stores flight data. The rocket body is constructed from soda bottles. 
+1. **Rocket Subsystem**: An ESP32-based flight control system that monitors flight parameters, controls parachute deployment, and stores flight data. The rocket body is constructed from soda bottles.
 2. **Launchpad Subsystem**: An ESP32-based control system that manages water/air pressurization, interfaces with the user, and provides the WiFi network infrastructure. Features a co-axial tube configuration. A PVC tube forms the outer channel (carrying water) while a smaller inner tube (carrying air) runs coaxially inside. These two channels are kept separate by a custom connection (details of which are handled separately). The rocket slides in the PVC tube when inserted on the launchpad.
-
 
 ## System Architecture
 
 ### Hardware Components
 
 #### Rocket Subsystem
+
 - **Microcontroller**: ESP32 (with integrated WiFi)
 - **Sensors**:
   - Altimeter/barometric pressure sensor (e.g., BMP280/BMP388)
@@ -27,6 +27,7 @@ This project involves the development of a water rocket system with onboard data
   - Constructed from soda bottles. The bottom bottle's neck slides around the launchpad outer tube.
 
 #### Launchpad Subsystem
+
 - **Microcontroller**: ESP32 (with integrated WiFi)
 - **Actuators**:
   - Solenoid valves for water filling
@@ -66,6 +67,7 @@ The network architecture remains centralized around the launchpad ESP32:
 ### Rocket ESP32 Software
 
 #### Flight State Machine
+
 1. **Pre-launch State**:
    - Initialize sensors and begin low-frequency data logging.
    - Wait for the launch acceleration threshold.
@@ -88,16 +90,19 @@ The network architecture remains centralized around the launchpad ESP32:
    - Transfer flight data to the launchpad/user device.
 
 #### Data Logging Subsystem
+
 - Timestamp each data point (milliseconds since boot).
 - Log sensor readings to an SD card in CSV format with headers (Time, Altitude, Vertical Acceleration, 3-axis Acceleration, Temperature, System Events).
 
 #### Parachute Deployment Algorithm
+
 - Monitor vertical acceleration and compute a moving average.
 - Deploy the parachute when:
   - Vertical acceleration is less than –9.5 m/s² (adjustable threshold) for more than 100ms.
   - Alternatively, deploy using a backup timer after apogee.
 
 #### WiFi Client Implementation
+
 - Store launchpad network credentials.
 - Attempt reconnection after landing with exponential backoff.
 - Timeout after 5 minutes if no connection is established, then enter sleep mode.
@@ -105,15 +110,18 @@ The network architecture remains centralized around the launchpad ESP32:
 ### Launchpad ESP32 Software
 
 #### WiFi Access Point
+
 - Initializes as an AP with a fixed SSID and password.
 - Manages connected devices and supports power-saving features.
 
 #### Web Server Implementation
+
 - Serves the HTML/CSS/JavaScript control interface.
 - Provides direct URL endpoints for control functions.
 - Uses WebSocket for real-time status updates (flow rate, volume, pressure).
 
 #### Water Flow Control
+
 - Monitors the flow meter pulses to compute water volume.
 - Uses the formula:
   - **Flow rate (L/min)**: Pulse frequency / K-factor.
@@ -121,6 +129,7 @@ The network architecture remains centralized around the launchpad ESP32:
 - Automatically closes the water valve when the target volume is reached.
 
 #### Filling Process Control and State Machine
+
 The filling process integrates both water and air management and is carried out as follows:
 
 0. **Pre-Filling – Safety Lock**:  
@@ -147,10 +156,12 @@ The filling process integrates both water and air management and is carried out 
    - The distributor remains in the all-blocked position to prevent any unintended air release.
 
 #### Data Management
+
 - Logs launch parameters including water volume, pressure, launch time, and environmental conditions.
 - Receives flight data from the rocket and provides options for downloading via the web interface.
 
 #### Safety Systems
+
 - Implements pressure threshold limiters.
 - Uses valve timeout safeguards and system state verification.
 - Provides an emergency pressure release capability.
@@ -158,6 +169,7 @@ The filling process integrates both water and air management and is carried out 
 ## Communication Implementation
 
 ### Direct Web Interface
+
 - **URL Endpoints**:
   - `/status`: Returns system status.
   - `/water-control`: Controls the water valve and reports flow meter readings.
@@ -166,11 +178,14 @@ The filling process integrates both water and air management and is carried out 
   - `/data`: Retrieves flight data.
 
 ### WebSocket for Real-time Updates
+
 - Establishes a WebSocket connection to send periodic updates on flow rate, water volume, and pressure.
 - Updates client-side gauges and displays accordingly.
 
-### Code examples :
-#### C++ :
+### Code examples
+
+#### C++
+
 ``` cpp
 // Set up the WebSocket server
 AsyncWebSocket ws("/ws");
@@ -197,7 +212,8 @@ void updateWaterLevel() {
 }
 ```
 
-#### JS :
+#### JS
+
 ``` js
 const socket = new WebSocket('ws://' + window.location.hostname + '/ws');
 
@@ -223,11 +239,14 @@ function startFilling(targetAmount) {
 ## Flow Meter Integration
 
 ### Hardware Connection
+
 - Connect the flow meter signal pin to an interrupt-capable GPIO.
 - Power the flow meter at the appropriate voltage (typically 5V) and include a pull-up resistor if needed.
 
 ### Software Implementation
+
 - **Interrupt-Based Pulse Counting**:
+
   ```cpp
   const byte FLOW_SENSOR_PIN = 27;
   volatile int flowPulseCount = 0;
@@ -241,7 +260,9 @@ function startFilling(targetAmount) {
     attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowPulseCounter, RISING);
   }
   ```
+
 - **Flow Rate and Volume Calculation**:
+
   ```cpp
   const float FLOW_CALIBRATION_FACTOR = 7.5; // Pulses per liter (calibrate as needed)
   float flowRate = 0.0;
@@ -264,7 +285,9 @@ function startFilling(targetAmount) {
     }
   }
   ```
+
 - **Automatic Valve Control**:
+
   ```cpp
   void controlWaterFill(float targetVolumeMl) {
     if (totalVolume < targetVolumeMl) {
@@ -294,7 +317,7 @@ function startFilling(targetAmount) {
      Close the water valve. Reconfigure the pressure distributor to connect the rocket’s air channel to the compressor. The compressor pressurizes the rocket, ensuring the water remains inside.
    - **Locking Pressure**:  
      Disconnect the rocket’s air channel from the compressor (without venting to the atmosphere) by locking the distributor, maintaining the internal pressure.
-     
+
 3. **Launch Sequence**:
    - When the user initiates the launch, the servo controlling the rocket locking mechanism rotates to release the rocket.
    - The rocket takes off, and shortly afterward, the servo returns to the locked position to secure the mechanism for the next launch.
@@ -307,26 +330,31 @@ function startFilling(targetAmount) {
 ## Implementation Considerations
 
 ### Power Management
+
 - **Rocket ESP32**:
   - Operates on a 3.7V LiPo battery (≥500mAh) with deep sleep modes and battery status indication.
 - **Launchpad ESP32**:
   - Utilizes a stable 12V supply for solenoids and a separate 5V regulated supply for the ESP32, servo, and flow meter. Power filtering is recommended to mitigate noise from solenoid operation.
 
 ### Environmental Factors
+
 - Waterproof rocket electronics.
 - Compensation for barometric and temperature changes.
 - Shock resistance for the accelerometer.
 
 ### Flow Meter Calibration & Safety
+
 - Calibrate the flow meter to determine the precise pulse/liter ratio.
 - Regularly verify calibration and account for variations in water pressure.
 - Integrate pressure threshold limiters, valve timeouts, and redundant sensor checks.
 
 ### Failure Modes and Recovery
+
 - SD card, WiFi, sensor, and battery failures should trigger safe shutdown or recovery procedures.
 - The distributor and valve control are designed with safety in mind to prevent unintended pressure loss.
 
 ### Testing Procedures
+
 - Perform component-level and integration testing.
 - Verify flow meter calibration and safety protocols through simulated and low-altitude tests.
 - Execute full system tests including recovery verification.

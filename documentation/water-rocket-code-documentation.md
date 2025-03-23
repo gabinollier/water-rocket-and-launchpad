@@ -7,10 +7,12 @@ This document outlines the networking architecture and software implementation f
 ## 1. Project Overview
 
 The water rocket system consists of two primary subsystems:
+
 - **Launchpad Subsystem**: Provides the user interface (hosted on an ESP32) and manages water/air filling, pressurization, and launch operations.
 - **Rocket Subsystem**: Executes the flight control, logs in-flight data to an SD card, and reconnects post-flight to transfer data.
 
 This complementary documentation focuses on:
+
 - The networking design and communication protocols.
 - The code architecture for the ESP32 firmware on the launchpad.
 - Integration of HTML/CSS/JS (with TailwindCSS) for the UI.
@@ -57,6 +59,7 @@ This complementary documentation focuses on:
   - **GET `/data`**: Retrieves flight data (CSV format) recorded on the rocket’s SD card.
 
 *Example:*
+
 ```cpp
 // REST endpoint for water control
 server.on("/water-control", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -72,6 +75,7 @@ server.on("/water-control", HTTP_POST, [](AsyncWebServerRequest *request) {
   A WebSocket connection (`/ws`) provides live updates on water level, pressure, and fill progress. This allows the UI to refresh gauges and indicators without page reloads.
   
 - **Implementation**:
+
   ```cpp
   AsyncWebSocket ws("/ws");
   server.addHandler(&ws);
@@ -133,6 +137,7 @@ server.on("/water-control", HTTP_POST, [](AsyncWebServerRequest *request) {
     After each flight, the UI shows a new entry with the flight date and time. Users can view the CSV data directly in a table or download it for analysis.
 
 *Example JavaScript code snippet:*
+
 ```js
 // Establishing WebSocket connection for real-time updates
 const socket = new WebSocket(`ws://${window.location.hostname}/ws`);
@@ -158,6 +163,7 @@ function startFilling(targetVolume) {
 ## 5. Critical Safety and Control Code
 
 The most safety-critical operations are implemented in C++. These include:
+
 - **Pre-Filling Validation**:  
   Before starting the water filling process, the code checks that the lock mechanism is engaged.
   
@@ -170,6 +176,7 @@ The most safety-critical operations are implemented in C++. These include:
   - Connects the rocket to the atmosphere to release excess pressure.
   
 *Sample C++ function for safety check:*
+
 ```cpp
 bool canStartFilling() {
   // Check if the locking mechanism is engaged
@@ -210,17 +217,19 @@ bool canStartFilling() {
 ## 7. Conclusion and Future Expansion
 
 This networking and code documentation details the inner workings of the water rocket launchpad’s communication and control systems. By combining robust C++ safety checks with a modern web interface built on HTML/CSS/JS/TailwindCSS, the system ensures:
+
 - Real-time monitoring via WebSocket.
 - Safe and controlled operations via REST endpoints.
 - Seamless post-flight data transfer and visualization.
 
 **Future enhancements** may include:
+
 - Enhanced security protocols for the web server.
 - More granular telemetry on the UI.
 - Additional safety routines and fallback mechanisms.
 
 This integrated approach ensures that both the hardware and software systems work in harmony for a safe and engaging water rocket launch experience.
 
---- 
+---
 
 This documentation should serve as a technical reference for developers and engineers looking to understand or extend the networking and code aspects of the water rocket project.
