@@ -65,6 +65,8 @@ uint32_t launchTime = 0;
 LogEntry logs[MAX_LOGS];
 int logIndex = 0;
 std::vector<FlightDataEntry> flightData;
+long deltaTime = 0; 
+long previousLoopTime = 0;
 
 // Function declarations
 
@@ -85,12 +87,13 @@ void setupHttpEndpoints();
 
 void handleAPIGetLogs();
 void handleAPIGetTotalVolume();
-void handleAPIStartFilling();
-void handleAPIAbort();
-void handleAPILaunch();
 void handleAPIGetRocketReadiness();
 void handleAPIGetRocketData();
 void handleAPIGetLaunchpadState();
+void handleAPIStartFilling();
+void handleAPILaunch();
+void handleAPIReturnToIdle();
+void handleAPIAbort();
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
 
@@ -101,8 +104,23 @@ void sendWSReceivingData(float percentage);
 
 void println(String message);
 
+bool checkRocketConnection();
+float getDataTransferPercentage();
+float getPressure();
+float getFlow();
+void enablePump();
+void disablePump();
+void setPressureDistributorToAtmosphere();
+void setPressureDistributorToCompressor();
+void setPressureDistributorToLocked();
+void closeLockSystem();
+void openLockSystem();
+float getRocketVolume();
+bool getRocketReadiness();
+
 void setup() 
 {
+    previousLoopTime = millis();
 
     Serial.begin(115200);
     delay(1000);
@@ -132,8 +150,10 @@ void setup()
 }
 
 void loop() 
-
 {
+    deltaTime = millis() - previousLoopTime;
+    previousLoopTime = millis();
+
     dnsServer.processNextRequest();
     httpServer.handleClient();
     webSocketServer.loop();
@@ -154,7 +174,9 @@ void loop()
 
     // Launch sequence tracking
 
-    updatePressureAndIncrementVolume();
+    currentPressure = getPressure();
+    float flow = getFlow();
+    currentWaterVolume += flow * (deltaTime / 1000.0);
 
     if (currentLaunchpadState == WATER_FILLING) 
     {
@@ -187,7 +209,7 @@ void loop()
     }
     else if (currentLaunchpadState == WAITING_FOR_ROCKET) 
     {
-        bool isRocketConnected = true; // TODO : Check for connection status
+        bool isRocketConnected = checkRocketConnection(); 
         if (isRocketConnected) 
         {
             changeState(RECEIVING_DATA);
@@ -195,7 +217,7 @@ void loop()
     } 
     else if (currentLaunchpadState == RECEIVING_DATA) 
     {
-        float dataTransferPercentage = 1; // TODO : Get real data transfer percentage
+        float dataTransferPercentage = getDataTransferPercentage();
         sendWSReceivingData(dataTransferPercentage);
         if (dataTransferPercentage >= 1) 
         {
@@ -204,25 +226,6 @@ void loop()
     }
 
     delay(10);
-}
-
-void updatePressureAndIncrementVolume() 
-{
-    // TODO : Actually request the flowmeter and pressure sensor for current values
-
-    // SIMULATION :
-    if (currentLaunchpadState == IDLE) 
-    {
-        currentPressure = 1.0;
-    }
-    else if (currentLaunchpadState == WATER_FILLING) 
-    {
-        currentWaterVolume += 0.001; 
-    }
-    else if (currentLaunchpadState == PRESSURIZING) 
-    {
-        currentPressure += 0.001; 
-    }
 }
 
 void changeState(LaunchpadState newState) 
@@ -254,6 +257,8 @@ void changeState(LaunchpadState newState)
         }
     }
 
+    println("Changement d'état : " + stateToString(previousState) + " -> " + stateToString(newState));
+    sendWSNewState(stateToString(newState));
 
     switch(newState) 
     {
@@ -262,30 +267,35 @@ void changeState(LaunchpadState newState)
             {
                 println("Séquence de lancement annulée au stade : " + stateToString(previousState));
             }
-            // TODO : Stop pump, set pressure distributor to atmosphere, lock the lock system
+            closeLockSystem();
+            disablePump();
+            setPressureDistributorToAtmosphere();
             break;
 
         case WATER_FILLING:
             currentWaterVolume = 0;
-            // TODO : Set pressure distributor to atmosphere, start pump
+            setPressureDistributorToAtmosphere();
+            enablePump();
             break;
 
         case PRESSURIZING:
-            // TODO : Stop pump, set pressure distributor to compressor
+            disablePump();
+            setPressureDistributorToCompressor();
             break;
 
         case READY_FOR_LAUNCH:
-            // TODO : Set pressure distributor to locked
+            setPressureDistributorToLocked();
             break;
 
         case LAUNCHING:
             launchTime = millis();
             // TODO : Transfer start time, pressure and water volume to the rocket
-            // TODO : Release rocket
+            openLockSystem();
             break;
 
         case WAITING_FOR_ROCKET:
-            // TODO : Set pressure distributor to atmosphere and lock the lock system
+            setPressureDistributorToAtmosphere();
+            closeLockSystem();
             break;
 
         case RECEIVING_DATA:
@@ -295,8 +305,7 @@ void changeState(LaunchpadState newState)
             break;
     }
 
-    println("Changement d'état : " + stateToString(previousState) + " -> " + stateToString(newState));
-    sendWSNewState(stateToString(newState));
+    
 }
 
 String stateToString(LaunchpadState state) 
@@ -345,7 +354,7 @@ bool setupConnectionToExternalWiFi()
 
     int attemptCount = 0;
     while (WiFi.status() != WL_CONNECTED && attemptCount < 20) 
-    {  // Attente max de 10 secondes
+    {
         delay(500);
         attemptCount++;
     }
@@ -358,7 +367,7 @@ bool setupConnectionToExternalWiFi()
     else 
     {
         println("Échec de connexion au réseau Wi-Fi externe. Fonctionnement en mode AP uniquement.");
-        return false; // Not critical, so we still proceed
+        return false; 
     }
 }
 
@@ -400,6 +409,7 @@ void setupAPIEndpoints()
 
     httpServer.on("/api/start-filling", HTTP_POST, handleAPIStartFilling);
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
+    httpServer.on("/api/return-to-idle", HTTP_POST, handleAPIReturnToIdle);
     httpServer.on("/api/abort", HTTP_POST, handleAPIAbort);
 }
 
@@ -430,6 +440,8 @@ void setupHttpEndpoints()
 
 // API handlers implementation
 
+/// GET
+
 void handleAPIGetLogs() 
 {
     JsonDocument doc;
@@ -448,97 +460,7 @@ void handleAPIGetLogs()
 void handleAPIGetTotalVolume() 
 {
     JsonDocument doc;
-    doc["totalVolume"] = 1.5;  // TODO : Request the rocket for the real total volume of water
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
-}
-
-void handleAPIStartFilling() 
-{
-    if (currentLaunchpadState != IDLE) 
-    {
-        JsonDocument doc;
-        doc["status"] = "error";
-        doc["message"] = "La fusée doit être verrouillée et en état IDLE";
-        String response;
-        serializeJson(doc, response);
-        httpServer.send(400, "application/json", response);
-        return;
-    }
-    
-    if (httpServer.hasArg("water-volume") && httpServer.hasArg("pressure")) 
-    {
-        targetWaterVolume = httpServer.arg("volume").toFloat();
-        float maxVolume = 1.5; // TODO : Request the rocket for max volume
-        if (targetWaterVolume <= 0 || targetWaterVolume > maxVolume) 
-        {
-            JsonDocument doc;
-            doc["status"] = "error";
-            doc["message"] = "Volume d'eau invalide";
-            String response;
-            serializeJson(doc, response);
-            httpServer.send(400, "application/json", response);
-            return;
-        }
-
-        targetPressure = httpServer.arg("pressure").toFloat();
-        if (targetPressure <= 1 || targetPressure > MAX_PRESSURE) 
-        { 
-            JsonDocument doc;
-            doc["status"] = "error";
-            doc["message"] = "Valeur de pression invalide";
-            String response;
-            serializeJson(doc, response);
-            httpServer.send(400, "application/json", response);
-            return;
-        }
-
-        changeState(WATER_FILLING);
-        JsonDocument doc;
-        doc["status"] = "success";
-        String response;
-        serializeJson(doc, response);
-        httpServer.send(200, "application/json", response);
-    } 
-    else 
-    {
-        JsonDocument doc;
-        doc["status"] = "error";
-        doc["message"] = "Les paramètres de volume et de pression sont requis";
-        String response;
-        serializeJson(doc, response);
-        httpServer.send(400, "application/json", response);
-    }
-}
-
-void handleAPIAbort() 
-{
-    changeState(IDLE);
-    JsonDocument doc;
-    doc["status"] = "success";
-    doc["message"] = "Séquence de lancement annulée";
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
-}
-
-void handleAPILaunch() 
-{
-    if (currentLaunchpadState != READY_FOR_LAUNCH) 
-    {
-        JsonDocument doc;
-        doc["status"] = "error";
-        doc["message"] = "La fusée n'est pas prête pour le lancement";
-        String response;
-        serializeJson(doc, response);
-        httpServer.send(400, "application/json", response);
-        return;
-    }
-
-    changeState(LAUNCHING);
-    JsonDocument doc;
-    doc["status"] = "success";
+    doc["totalVolume"] = getRocketVolume();
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -546,7 +468,7 @@ void handleAPILaunch()
 
 void handleAPIGetRocketReadiness() 
 {
-    bool isReady = true; // TODO : Request the rocket for readiness 
+    bool isReady = getRocketReadiness();
     JsonDocument doc;
     doc["isReady"] = isReady;
     String response;
@@ -584,6 +506,109 @@ void handleAPIGetLaunchpadState()
 {
     JsonDocument doc;
     doc["state"] = stateToString(currentLaunchpadState);
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
+}
+
+/// POST
+
+void handleAPIStartFilling() 
+{
+    if (currentLaunchpadState != IDLE) 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "La fusée doit être verrouillée et en état IDLE";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+    
+    if (httpServer.hasArg("water-volume") && httpServer.hasArg("pressure")) 
+    {
+        targetWaterVolume = httpServer.arg("water-volume").toFloat();
+        float maxVolume = getRocketVolume();
+        if (targetWaterVolume <= 0 || targetWaterVolume > maxVolume) 
+        {
+            JsonDocument doc;
+            doc["status"] = "error";
+            doc["message"] = "Volume d'eau invalide (min : 0L | max : " + String(maxVolume) + "L | demandé : " + String(targetWaterVolume) + "L)";
+            String response;
+            serializeJson(doc, response);
+            httpServer.send(400, "application/json", response);
+            return;
+        }
+
+        targetPressure = httpServer.arg("pressure").toFloat();
+        if (targetPressure <= 1 || targetPressure > MAX_PRESSURE) 
+        { 
+            JsonDocument doc;
+            doc["status"] = "error";
+            doc["message"] = "Valeur de pression invalide";
+            String response;
+            serializeJson(doc, response);
+            httpServer.send(400, "application/json", response);
+            return;
+        }
+
+        changeState(WATER_FILLING);
+        JsonDocument doc;
+        doc["status"] = "success";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(200, "application/json", response);
+    } 
+    else 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "Les paramètres de volume et de pression sont requis";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+    }
+}
+
+void handleAPILaunch() 
+{
+    if (currentLaunchpadState != READY_FOR_LAUNCH) 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "La fusée n'est pas prête pour le lancement";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    changeState(LAUNCHING);
+    JsonDocument doc;
+    doc["status"] = "success";
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
+}
+
+void handleAPIReturnToIdle()
+{
+    changeState(IDLE);
+    JsonDocument doc;
+    doc["status"] = "success";
+    doc["message"] = "Retour à l'état IDLE";
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
+}
+
+void handleAPIAbort() 
+{
+    changeState(IDLE);
+    JsonDocument doc;
+    doc["status"] = "success";
+    doc["message"] = "Séquence de lancement annulée";
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -637,9 +662,6 @@ void sendWSNewState(String newState)
 
 void sendWSFilling(float waterVolume, float pressure) 
 {
-    // debug :
-    // println("Envoi de données de remplissage : " + String(waterVolume) + "L, " + String(pressure) + " bars");
-
     JsonDocument doc;
     doc["type"] = "filling";
     doc["water-volume"] = waterVolume;
@@ -677,4 +699,87 @@ void println(String message)
     logIndex = (logIndex + 1) % MAX_LOGS;
 
     sendWSNewLog(String(millis()), message);
+}
+
+// Hardware-related functions implementation - SIMULATED VERSION
+
+bool checkRocketConnection() // TODO : Implement this function
+{
+    delay(4000);
+    return true;
+}
+
+float SIMULATION_percentage = 0.0;
+float getDataTransferPercentage() // TODO : Implement this function
+{ 
+    SIMULATION_percentage += 0.3 * (deltaTime / 1000.0);
+    if (SIMULATION_percentage >= 1.0) {
+        SIMULATION_percentage = 1.0;
+    }
+    return SIMULATION_percentage;
+}
+
+float getPressure() // TODO : Implement this function
+{
+    if (currentLaunchpadState == PRESSURIZING) {
+        currentPressure += 0.3 * (deltaTime / 1000.0) * targetPressure;
+        println("Simulation : Pressurisation en cours : " + String(currentPressure) + " bars");
+    }
+
+    return currentPressure;
+}
+
+float getFlow() // TODO : Implement this function
+{
+    if (currentLaunchpadState == WATER_FILLING) {
+        println("Simulation : Remplissage en cours : " + String(currentWaterVolume) + "L");
+        return 0.15; // L/s
+    }
+    return 0.0;
+}
+
+void enablePump()  // TODO : Implement this function
+{
+    println("Simulation : Pompe activée");
+}
+
+void disablePump() // TODO : Implement this function
+{
+    println("Simulation : Pompe désactivée");
+}
+
+void setPressureDistributorToAtmosphere() // TODO : Implement this function
+{
+    println("Simulation : Distributeur de pression mis à l'atmosphère");
+    currentPressure = 1.0;
+}
+
+void setPressureDistributorToCompressor() // TODO : Implement this function
+{
+    println("Simulation : Distributeur de pression mis au compresseur");
+}
+
+void setPressureDistributorToLocked() // TODO : Implement this function
+{
+    println("Simulation : Distributeur de pression verrouillé");
+}
+
+void closeLockSystem() // TODO : Implement this function
+{
+    println("Simulation : Système de verrouillage fermé");
+}
+
+void openLockSystem() // TODO : Implement this function
+{
+    println("Simulation : Système de verrouillage ouvert");
+}
+
+float getRocketVolume() // TODO : Implement this function
+{
+    return 1.5; // L
+}
+
+bool getRocketReadiness() // Simulated rocket volume in liters
+{
+    return true;
 }
