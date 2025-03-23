@@ -26,7 +26,7 @@ async function fetchLogs()
 {
     if (!document.getElementById("logs")) return; 
 
-    const response = await fetch("/api/getlogs");
+    const response = await fetch("/api/get-logs");
     logs = await response.json(); 
 
     updateUI();
@@ -37,7 +37,7 @@ function listenWebSocket()
     webSocket.onmessage = (event) => {
         const wsMessage = JSON.parse(event.data);
     
-        if (wsMessage.type == 'log') {
+        if (wsMessage.type == 'new-log') {
             const { timestamp, message } = wsMessage;
             logs.push({ timestamp, message }); 
             updateUI(); 
