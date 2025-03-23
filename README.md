@@ -13,6 +13,7 @@ The project is based on two ESP32:
 ## Technical Features
 
 ### Launchpad
+
 - ESP32 runs as a WiFi access point. Both the rocket and the user laptop/phone are connected to it.
 - Serves a responsive web UI (HTML/CSS/JS with TailwindCSS) available within the local network, so the user can access it.
 - The UI allows the user to control the launch sequence and visualize data after the flight.
@@ -22,6 +23,7 @@ The project is based on two ESP32:
 - HTTP and Websocket backend is written in C++
 
 ### Rocket
+
 - In-flight data logging (altitude, acceleration, etc.)
 - Automatic parachute deployment
 - Post-flight reconnection to launchpad WiFi access point for data transfer
@@ -29,15 +31,17 @@ The project is based on two ESP32:
 
 ## Repository Structure
 
-```
+``` Folders structure
 /
 ├── launchpad/       # Launchpad ESP32 firmware
 │   ├── src/         # C++ source files
-│   └── data/        # Frontend web UI files (HTML/CSS/JS)
+│   └── frontend/    # Frontend web UI files (HTML/CSS/JS)
 ├── rocket/          # Rocket ESP32 firmware
 │   └── src/         # C++ source files
 └── docs/            # Technical documentation
 ```
+
+Note : The frontend files are stored in the `launchpad/frontend/` folder for easier development. In order to actually upload them on the ESP32, you need to run the `move-build-and-upload-frontend` npm script that will copy these files to the `launchpad/data/` folder and flash that folder into the ESP32 memory.
 
 ## License
 
