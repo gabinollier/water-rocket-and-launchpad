@@ -9,15 +9,15 @@
 
 // Constants
 
-const char* wifiSSID = "hippocampe2";
+const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
-const char* externalWifiSSID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const char* externalWifiPassword = "badadabadaoui";
+const char* externalWifiSSID = "LAPTOP-GABIN-OL";
+const char* externalWifiPassword = "{Kg91945";
 const char* dnsName = "rocket.local";
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 3; // seconds
-const int MAX_LOGS = 100;
+const int MAX_LOGS = 200;
 
 // Data structures
 
@@ -96,6 +96,7 @@ void handleAPIReturnToIdle();
 void handleAPIAbort();
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+void onWifiEvent(WiFiEvent_t event);
 
 void sendWSNewLog(String timestamp, String message);
 void sendWSNewState(String newState);
@@ -343,6 +344,7 @@ bool setupWiFiAP()
 {
     WiFi.mode(WIFI_AP_STA); 
     WiFi.softAP(wifiSSID, wifiPassword);
+    WiFi.onEvent(onWifiEvent);
 
     println("Point d'accès WiFi initialisé. IP locale : " + WiFi.softAPIP().toString());
     return true;
@@ -350,6 +352,12 @@ bool setupWiFiAP()
 
 bool setupConnectionToExternalWiFi() 
 {
+    if (externalWifiSSID == NULL || externalWifiPassword == NULL) 
+    {
+        println("Aucun réseau Wi-Fi externe configuré. Fonctionnement en mode AP uniquement.");
+        return false;
+    }
+
     WiFi.begin(externalWifiSSID, externalWifiPassword);
 
     int attemptCount = 0;
@@ -361,7 +369,7 @@ bool setupConnectionToExternalWiFi()
 
     if (WiFi.status() == WL_CONNECTED) 
     {
-        println("Connecté au réseau Wi-Fi externe. IP assignée : " + WiFi.localIP().toString());
+        println("Connecté au réseau Wi-Fi externe. IP locale assignée : " + WiFi.localIP().toString());
         return true;
     } 
     else 
@@ -631,6 +639,21 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
             break;
         case WStype_TEXT:
             println("WS : Message WebSocket reçu du client #" + String(num));
+            break;
+        default:
+            break;
+    }
+}
+
+void onWifiEvent(WiFiEvent_t event)
+{
+    switch(event) 
+    {
+        case SYSTEM_EVENT_AP_STACONNECTED:
+            println("Nouvel appareil connecté au Wi-Fi.");
+            break;
+        case SYSTEM_EVENT_AP_STADISCONNECTED:
+            println("Appareil déconnecté du Wi-Fi.");
             break;
         default:
             break;

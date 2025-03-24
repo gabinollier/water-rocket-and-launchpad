@@ -1,4 +1,4 @@
-import { webSocket } from "../websocket.js";
+import { webSocket } from "../modules/websocket.js";
 
 let logs = [];
 
