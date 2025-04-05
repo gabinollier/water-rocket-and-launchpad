@@ -14,9 +14,9 @@
 
 const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
-const char* externalWifiSSID = NULL;
-const char* externalWifiPassword = NULL;
-const char* dnsName = "rocket.local";
+const char* externalWifiSSID = "pc-gabin";
+const char* externalWifiPassword = "12345678";
+const char* dnsName = "launchpad.local"; // est-ce qu'on peut mettre autre chose que .local ?
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 3; // seconds
@@ -24,40 +24,22 @@ const int MAX_LOGS = 200;
 
 // Data structures
 
-struct FlightDataEntry 
-{
-    uint32_t timestamp;
-    float altitude;
-    float acceleration;
-    float speed;
-    float pressure;
-    float temperature;
-};
-
 struct LogEntry 
 {
     uint32_t timestamp;
     String message;
 };
 
-struct RocketIdentity {
-    String mac;
-    String ip;
-};
-
-RocketIdentity connectedRocket;
-
 enum LaunchpadState 
 {
-    UNINITIALIZED,
+    NOT_INITIALIZED,
     IDLE,
     WATER_FILLING,
     PRESSURIZING,
     READY_FOR_LAUNCH,
     LAUNCHING,
     WAITING_FOR_ROCKET,
-    RECEIVING_DATA,
-    RECEIVED_DATA
+    VIEWING_DATA
 };
 
 // Global variables
@@ -65,18 +47,16 @@ enum LaunchpadState
 WebServer httpServer(80);
 WebSocketsServer webSocketServer = WebSocketsServer(81);
 DNSServer dnsServer;
-LaunchpadState currentLaunchpadState = UNINITIALIZED;
-float targetWaterVolume = 0.0;   // in liters
-float currentWaterVolume = 0.0;  // in liters
-float targetPressure = 0.0;      // in bars
-float currentPressure = 0.0;     // in bars
-int dataTransferPercentage = 0;
-uint32_t launchTime = 0;
+LaunchpadState currentLaunchpadState = NOT_INITIALIZED;
 LogEntry logs[MAX_LOGS];
 int logIndex = 0;
-std::vector<FlightDataEntry> flightData;
-long deltaTime = 0; 
-long previousLoopTime = 0;
+String rocketIP = "";
+float currentWaterVolume = 0.0;
+float targetWaterVolume = 0.0;
+float currentPressure = 0.0;
+float targetPressure = 0.0;
+unsigned long launchTime = 0;
+unsigned long deltaTime = 0;
 
 
 // Function declarations
@@ -98,9 +78,7 @@ void setupHttpEndpoints();
 
 void handleAPIGetLogs();
 void handleAPIGetTotalVolume();
-void handleAPIGetRocketReadiness();
-void handleAPIGetRocketData();
-void handleAPIGetLaunchpadState();
+void handleAPIGetFlightData();
 void handleAPIStartFilling();
 void handleAPILaunch();
 void handleAPIReturnToIdle();
@@ -113,7 +91,7 @@ void onWifiEvent(WiFiEvent_t event);
 void sendWSNewLog(String timestamp, String message);
 void sendWSNewState(String newState);
 void sendWSFilling(float waterVolume, float pressure);
-void sendWSReceivingData(float percentage);
+void sendWSDataAvailable();
 
 void println(String message);
 
@@ -128,67 +106,49 @@ void setPressureDistributorToCompressor();
 void setPressureDistributorToLocked();
 void closeLockSystem();
 void openLockSystem();
+
 float getRocketVolume();
-bool getRocketReadiness();
+bool isRocketIdling();
+bool tellRocketToStartWaitingForLaunch();
+bool isRocketWaitingForLaunch();
+bool isRocketConnected();
 
 void setup() 
 {
-    previousLoopTime = millis();
-
     Serial.begin(115200);
     delay(1000);
+
     println("\nInitialisation...");
 
     bool setupSuccess = true;
-
-    
-
-    
-    setupSuccess &= setupFileSystem();
-    setupSuccess &= setupWiFiAP();
-    
+    setupSuccess = setupSuccess && setupFileSystem();
+    setupSuccess = setupSuccess && setupWiFiAP();
     setupConnectionToExternalWiFi();
-    
-    setupSuccess &= setupLocalDNS();
-    setupSuccess &= setupWebServer();
-    setupSuccess &= setupWebSocketServer();
-    
+    setupSuccess = setupSuccess && setupLocalDNS();
+    setupSuccess = setupSuccess && setupWebServer();
+    setupSuccess = setupSuccess && setupWebSocketServer();
     if (setupSuccess) 
     {
         println("Le pas de tir est prêt !");
+        changeState(IDLE);
     } 
     else 
     {
         println("Initialisation terminée avec des erreurs. Le pas de tir peut ne pas fonctionner correctement.");
     }
-    
-    changeState(IDLE);
 }
 
 void loop() 
 {
-    deltaTime = millis() - previousLoopTime;
-    previousLoopTime = millis();
+    static unsigned long previousMillis = millis();
+    static unsigned long lastWifiCheck = 0;
+
+    deltaTime = millis() - previousMillis;
+    previousMillis = millis();
 
     dnsServer.processNextRequest();
     httpServer.handleClient();
     webSocketServer.loop();
-
-    // Check external Wi-Fi connection every 30 seconds
-    static unsigned long lastWifiCheck = 0;
-    if (millis() - lastWifiCheck > 30000) 
-    { 
-        lastWifiCheck = millis();
-        
-        if (WiFi.status() != WL_CONNECTED) 
-        {
-            println("Reconnexion au réseau Wi-Fi " + String(externalWifiSSID) + "...");
-            WiFi.disconnect();
-            WiFi.begin(externalWifiSSID, externalWifiPassword);
-        }
-    }
-
-    // Launch sequence tracking
 
     currentPressure = getPressure();
     float flow = getFlow();
@@ -213,37 +173,31 @@ void loop()
         } 
         else 
         {
-            changeState(READY_FOR_LAUNCH);
+            if (tellRocketToStartWaitingForLaunch())
+            {
+                changeState(READY_FOR_LAUNCH);
+            }
+            else 
+            {
+                changeState(IDLE);
+            }
         }
     }  
     else if (currentLaunchpadState == LAUNCHING) 
     {
-        if (millis() - launchTime > LAUNCH_CLEARING_DELAY * 1000) 
+        if (millis() > launchTime + LAUNCH_CLEARING_DELAY * 1000 ) 
         { 
             changeState(WAITING_FOR_ROCKET);
         }
     }
-    else if (currentLaunchpadState == WAITING_FOR_ROCKET) 
+    else if (currentLaunchpadState == WAITING_FOR_ROCKET)
     {
-        bool isRocketConnected = checkRocketConnection(); 
-        if (isRocketConnected) 
+        if (isRocketConnected()) 
         {
-            changeState(RECEIVING_DATA);
-        }
-    } 
-    else if (currentLaunchpadState == RECEIVING_DATA) 
-    {
-        float dataTransferPercentage = getDataTransferPercentage();
-        sendWSReceivingData(dataTransferPercentage);
-        if (dataTransferPercentage >= 1) 
-        {
-            changeState(RECEIVED_DATA);
+            changeState(VIEWING_DATA);
         }
     }
 
-    // TESTS :
-    long int decimalPlaces = 10U;
-    println("Pression actuelle : " + String(currentPressure, decimalPlaces) + " bars");
     delay(10);
 }
 
@@ -261,14 +215,13 @@ void changeState(LaunchpadState newState)
     if (newState != IDLE)
     { 
         // This ensures that the sequence is followed in the correct order.
-        if ((newState == UNINITIALIZED) 
+        if ((newState == NOT_INITIALIZED) 
             || (newState == WATER_FILLING && previousState != IDLE)
             || (newState == PRESSURIZING && previousState != WATER_FILLING)
             || (newState == READY_FOR_LAUNCH && previousState != PRESSURIZING)
             || (newState == LAUNCHING && previousState != READY_FOR_LAUNCH)
             || (newState == WAITING_FOR_ROCKET && previousState != LAUNCHING)
-            || (newState == RECEIVING_DATA && previousState != WAITING_FOR_ROCKET)
-            || (newState == RECEIVED_DATA && previousState != RECEIVING_DATA))
+            || (newState == VIEWING_DATA && previousState != WAITING_FOR_ROCKET))
         {
             println("Erreur : impossible de passer à l'état " + stateToString(newState) + " depuis l'état " + stateToString(previousState) + ". Annulation de la séquence de lancement.");
             changeState(IDLE);
@@ -282,7 +235,7 @@ void changeState(LaunchpadState newState)
     switch(newState) 
     {
         case IDLE:
-            if (previousState != RECEIVED_DATA && previousState != UNINITIALIZED)
+            if (previousState != VIEWING_DATA && previousState != NOT_INITIALIZED)
             {
                 println("Séquence de lancement annulée au stade : " + stateToString(previousState));
             }
@@ -307,8 +260,8 @@ void changeState(LaunchpadState newState)
             break;
 
         case LAUNCHING:
+            rocketIP = ""; 
             launchTime = millis();
-            // TODO : Transfer start time, pressure and water volume to the rocket
             openLockSystem();
             break;
 
@@ -317,10 +270,8 @@ void changeState(LaunchpadState newState)
             closeLockSystem();
             break;
 
-        case RECEIVING_DATA:
-            break;
-
-        case RECEIVED_DATA:
+        case VIEWING_DATA:
+            sendWSDataAvailable();
             break;
     }
 
@@ -331,15 +282,14 @@ String stateToString(LaunchpadState state)
 {
     switch(state) 
     {
-        case UNINITIALIZED: return "UNINITIALIZED";
+        case NOT_INITIALIZED: return "NOT_INITIALIZED";
         case IDLE: return "IDLE";
         case WATER_FILLING: return "WATER_FILLING";
         case PRESSURIZING: return "PRESSURIZING";
         case READY_FOR_LAUNCH: return "READY_FOR_LAUNCH";
         case LAUNCHING: return "LAUNCHING";
         case WAITING_FOR_ROCKET: return "WAITING_FOR_ROCKET";
-        case RECEIVING_DATA: return "RECEIVING_DATA";
-        case RECEIVED_DATA: return "RECEIVED_DATA";
+        case VIEWING_DATA: return "VIEWING_DATA";
         default: return "UNKNOWN";
     }
 }
@@ -374,6 +324,24 @@ bool setupConnectionToExternalWiFi()
     {
         println("Aucun réseau Wi-Fi externe configuré. Fonctionnement en mode AP uniquement.");
         return false;
+    }
+
+    // DEBUG : Scan for available networks :
+
+    Serial.println("Scan des réseaux Wi-Fi disponibles...");
+    int n = WiFi.scanNetworks();
+    if (n == 0) 
+    {
+        Serial.println("Aucun réseau Wi-Fi trouvé.");
+        return false;
+    } 
+    else 
+    {
+        Serial.println("Réseaux Wi-Fi trouvés : " + String(n));
+        for (int i = 0; i < n; i++) 
+        {
+            Serial.println("- " + WiFi.SSID(i) + " (" + (100+WiFi.RSSI(i)) + "%)");
+        }
     }
 
     WiFi.begin(externalWifiSSID, externalWifiPassword);
@@ -428,16 +396,13 @@ bool setupWebSocketServer()
 void setupAPIEndpoints() 
 {
     httpServer.on("/api/get-logs", HTTP_GET, handleAPIGetLogs);
-    httpServer.on("/api/get-rocket-readiness", HTTP_GET, handleAPIGetRocketReadiness);
     httpServer.on("/api/get-rocket-volume", HTTP_GET, handleAPIGetTotalVolume);
-    httpServer.on("/api/get-rocket-data", HTTP_GET, handleAPIGetRocketData);
-    httpServer.on("/api/get-launchpad-state", HTTP_GET, handleAPIGetLaunchpadState);
 
+    httpServer.on("/api/identify-rocket", HTTP_POST, handleAPIIdentifyRocket);
     httpServer.on("/api/start-filling", HTTP_POST, handleAPIStartFilling);
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
     httpServer.on("/api/return-to-idle", HTTP_POST, handleAPIReturnToIdle);
     httpServer.on("/api/abort", HTTP_POST, handleAPIAbort);
-    httpServer.on("/api/identify-rocket", HTTP_POST, handleAPIIdentifyRocket);
 }
 
 void setupFileServingEndpoints() 
@@ -493,49 +458,35 @@ void handleAPIGetTotalVolume()
     httpServer.send(200, "application/json", response);
 }
 
-void handleAPIGetRocketReadiness() 
+void handleAPIGetFlightData()
 {
-    bool isReady = getRocketReadiness();
-    JsonDocument doc;
-    doc["isReady"] = isReady;
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
-}
-
-void handleAPIGetRocketData() 
-{
-    if (flightData.empty()) 
+    // get the flight data using an http request to the rocket
+    if (!isRocketConnected()) 
     {
         JsonDocument doc;
-        doc["error"] = "Aucune donnée de vol disponible";
+        doc["error"] = "Aucune fusée connectée";
         String response;
         serializeJson(doc, response);
-        httpServer.send(200, "application/json", response);
+        httpServer.send(400, "application/json", response);
         return;
     }
 
-    String csvData = "timestamp,altitude,acceleration,speed,pressure,temperature\n";
-    for (const auto& entry : flightData) 
+    HTTPClient httpClient;
+    String serverPath = "http://" + rocketIP + "/api/get-flight-data";
+    httpClient.begin(serverPath);
+    int httpResponseCode = httpClient.GET();
+
+    if (httpResponseCode == 200) 
     {
-        csvData += String(entry.timestamp) + "," +
-                  String(entry.altitude) + "," +
-                  String(entry.acceleration) + "," +
-                  String(entry.speed) + "," +
-                  String(entry.pressure) + "," +
-                  String(entry.temperature) + "\n";
+        String payload = httpClient.getString();
+        httpServer.send(200, "application/json", payload);
+        httpClient.end();
+    } 
+    else 
+    {
+        println("Erreur lors de la récupération des données de vol : " + String(httpResponseCode));
+        httpClient.end();
     }
-
-    httpServer.send(200, "text/csv", csvData);
-}
-
-void handleAPIGetLaunchpadState() 
-{
-    JsonDocument doc;
-    doc["state"] = stateToString(currentLaunchpadState);
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
 }
 
 /// POST
@@ -553,41 +504,7 @@ void handleAPIStartFilling()
         return;
     }
     
-    if (httpServer.hasArg("water-volume") && httpServer.hasArg("pressure")) 
-    {
-        targetWaterVolume = httpServer.arg("water-volume").toFloat();
-        float maxVolume = getRocketVolume();
-        if (targetWaterVolume <= 0 || targetWaterVolume > maxVolume) 
-        {
-            JsonDocument doc;
-            doc["status"] = "error";
-            doc["message"] = "Volume d'eau invalide (min : 0L | max : " + String(maxVolume) + "L | demandé : " + String(targetWaterVolume) + "L)";
-            String response;
-            serializeJson(doc, response);
-            httpServer.send(400, "application/json", response);
-            return;
-        }
-
-        targetPressure = httpServer.arg("pressure").toFloat();
-        if (targetPressure <= 1 || targetPressure > MAX_PRESSURE) 
-        { 
-            JsonDocument doc;
-            doc["status"] = "error";
-            doc["message"] = "Valeur de pression invalide";
-            String response;
-            serializeJson(doc, response);
-            httpServer.send(400, "application/json", response);
-            return;
-        }
-
-        changeState(WATER_FILLING);
-        JsonDocument doc;
-        doc["status"] = "success";
-        String response;
-        serializeJson(doc, response);
-        httpServer.send(200, "application/json", response);
-    } 
-    else 
+    if (!httpServer.hasArg("water-volume") || !httpServer.hasArg("pressure")) 
     {
         JsonDocument doc;
         doc["status"] = "error";
@@ -595,12 +512,68 @@ void handleAPIStartFilling()
         String response;
         serializeJson(doc, response);
         httpServer.send(400, "application/json", response);
+        return;
     }
+
+    if (!isRocketIdling()) 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "La fusée n'est pas connectée ou n'est pas prête";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    targetWaterVolume = httpServer.arg("water-volume").toFloat();
+    targetPressure = httpServer.arg("pressure").toFloat();
+    float maxVolume = getRocketVolume();
+
+    if (targetWaterVolume <= 0 || targetWaterVolume > maxVolume) 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "Volume d'eau invalide (min : 0L | max : " + String(maxVolume) + "L | demandé : " + String(targetWaterVolume) + "L)";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    if (targetPressure <= 1 || targetPressure > MAX_PRESSURE) 
+    { 
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "Valeur de pression invalide";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    changeState(WATER_FILLING);
+    JsonDocument doc;
+    doc["status"] = "success";
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
 }
 
 void handleAPILaunch() 
 {
     if (currentLaunchpadState != READY_FOR_LAUNCH) 
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "Le pas de tir n'est pas prête pour le lancement";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    if (!isRocketWaitingForLaunch()) 
     {
         JsonDocument doc;
         doc["status"] = "error";
@@ -621,10 +594,24 @@ void handleAPILaunch()
 
 void handleAPIReturnToIdle()
 {
+    if (isRocketConnected()) 
+    {
+        HTTPClient httpClient;
+        String serverPath = "http://" + rocketIP + "/api/return-to-idle";
+        httpClient.begin(serverPath);
+        httpClient.addHeader("Content-Type", "application/json");
+        int httpResponseCode = httpClient.POST("{}");
+        if (httpResponseCode != 200) 
+        {
+            println("Erreur lors de la demande de retour à l'état IDLE de la fusée : " + String(httpResponseCode));
+        }
+        httpClient.end();
+    }
+
     changeState(IDLE);
+
     JsonDocument doc;
     doc["status"] = "success";
-    doc["message"] = "Retour à l'état IDLE";
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -643,12 +630,6 @@ void handleAPIAbort()
 
 void handleAPIIdentifyRocket() 
 {
-    if (!httpServer.hasHeader("Content-Type") || httpServer.header("Content-Type") != "application/json") 
-    {
-        httpServer.send(400, "application/json", "{\"error\":\"Content-Type doit être application/json\"}");
-        return;
-    }
-
     String body = httpServer.arg("plain");
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, body);
@@ -659,22 +640,20 @@ void handleAPIIdentifyRocket()
         return;
     }
 
-    if (!doc.containsKey("mac") || !doc.containsKey("ip")) 
+    if (!doc.containsKey("ip")) 
     {
-        httpServer.send(400, "application/json", "{\"error\":\"Les champs mac et ip sont requis\"}");
+        httpServer.send(400, "application/json", "{\"error\":\"Le champ ip est requis\"}");
         return;
     }
 
-    connectedRocket.mac = doc["mac"].as<String>();
-    connectedRocket.ip = doc["ip"].as<String>();
-
-    println("Fusée identifiée - MAC: " + connectedRocket.mac + " IP: " + connectedRocket.ip);
-
     JsonDocument response;
-    response["status"] = "success";
+    response["success"] = false;
     String responseStr;
     serializeJson(response, responseStr);
     httpServer.send(200, "application/json", responseStr);
+
+    rocketIP = doc["ip"].as<String>();
+    println("Fusée identifiée - IP: " + rocketIP);
 }
 
 // WebSocket functions implementation
@@ -750,11 +729,10 @@ void sendWSFilling(float waterVolume, float pressure)
     webSocketServer.broadcastTXT(jsonString);
 }
 
-void sendWSReceivingData(float percentage) 
+void sendWSDataAvailable() 
 {
     JsonDocument doc;
-    doc["type"] = "receiving-data";
-    doc["percentage"] = percentage;
+    doc["type"] = "data-available";
     
     String jsonString;
     serializeJson(doc, jsonString);
@@ -854,31 +832,115 @@ void openLockSystem() // TODO : Implement this function
     println("Simulation : Système de verrouillage ouvert");
 }
 
-float getRocketVolume() // TODO : Implement this function
+float getRocketVolume() 
 {
-    return 1.5; // L
+    if (!isRocketConnected()) {
+        return 0.0;
+    }
+
+    HTTPClient httpClient;
+    String serverPath = "http://" + rocketIP + "/api/get-volume";
+    httpClient.begin(serverPath);
+
+    int httpResponseCode = httpClient.GET();
+    
+    if (httpResponseCode == 200) {
+        String payload = httpClient.getString();
+        JsonDocument doc;
+        deserializeJson(doc, payload);
+        float volume = doc["volume"];
+        httpClient.end();
+        return volume;
+    }
+    else
+    {
+        println("Erreur lors de la récupération du volume de la fusée : " + String(httpResponseCode));
+        httpClient.end();
+        return 0.0;
+    }
+
 }
 
-bool getRocketReadiness() {
-    if (connectedRocket.ip.length() == 0) {
+bool isRocketIdling() {
+    if (!isRocketConnected()) {
         return false;
     }
 
-    HTTPClient http;
-    String serverPath = "http://" + connectedRocket.ip + "/api/get-readiness";
-    http.begin(serverPath);
+    HTTPClient httpClient;
+    String serverPath = "http://" + rocketIP + "/api/is-idling";
+    httpClient.begin(serverPath);
     
-    int httpResponseCode = http.GET();
+    int httpResponseCode = httpClient.GET();
     
     if (httpResponseCode == 200) {
-        String payload = http.getString();
+        String payload = httpClient.getString();
         JsonDocument doc;
         deserializeJson(doc, payload);
-        bool ready = doc["ready"];
-        http.end();
+        bool ready = doc["is-idling"];
+        httpClient.end();
         return ready;
     }
     
-    http.end();
+    httpClient.end();
     return false;
+}
+
+bool tellRocketToStartWaitingForLaunch()
+{
+    if (!isRocketConnected()) 
+    {
+        println("Aucune fusée connectée, annulation...");
+        return false;
+    }
+
+    // Send a post request to rocketIP/api/get-ready-for-launch
+    HTTPClient httpClient;
+    String serverPath = "http://" + rocketIP + "/api/start-waiting-for-launch";
+    httpClient.begin(serverPath);
+
+    httpClient.addHeader("Content-Type", "application/json");
+    int httpResponseCode = httpClient.POST("{}");
+
+    if (httpResponseCode == 200) {
+        String payload = httpClient.getString();
+        JsonDocument doc;
+        deserializeJson(doc, payload);
+        return true;
+    }
+    else
+    {
+        println("Erreur lors de la demande de préparation de la fusée au lancement : " + String(httpResponseCode));
+        httpClient.end();
+        return false;
+    }
+}
+
+bool isRocketWaitingForLaunch()
+{
+    if (!isRocketConnected()) {
+        return false;
+    }
+
+    HTTPClient httpClient;
+    String serverPath = "http://" + rocketIP + "/api/is-waiting-for-launch";
+    httpClient.begin(serverPath);
+
+    int httpResponseCode = httpClient.GET();
+    
+    if (httpResponseCode == 200) {
+        String payload = httpClient.getString();
+        JsonDocument doc;
+        deserializeJson(doc, payload);
+        bool ready = doc["is-waiting"];
+        httpClient.end();
+        return ready;
+    }
+    
+    httpClient.end();
+    return false;
+}
+
+bool isRocketConnected()
+{
+    return rocketIP.length() > 0;
 }
