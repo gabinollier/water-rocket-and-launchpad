@@ -14,10 +14,8 @@
 
 const char* LAUNCHPAD_SSID = "Pas de tir 🚀";
 const char* LAUNCHPAD_PASSWORD = "hippocampe";
-const char* DNS_NAME = "rocket.local";
-const byte DNS_PORT = 53;
 const unsigned long WIFI_CHECK_INVERVAL = 500; // ms 
-const float LAUNCH_DETECTION_THRESHOLD = 1.0; // meters
+const float LAUNCH_DETECTION_THRESHOLD = 0.5; // meters
 const float g = 9.80665; // m/s²
 const int SAMPLE_RATE = 60; // Hz
 const int PRELAUNCH_BUFFER_DURATION = 2; // seconds
@@ -26,6 +24,9 @@ const unsigned long LANDING_DETECTION_ALTITUDE_THRESHOLD = 2; // meters
 const unsigned long LANDING_DETECTION_DURATION = 5; // seconds
 const float VOLUME = 3.0; // liters
 const int PARACHUTE_SERVO_PIN = 10; 
+const int BUZZER_PIN = 6; 
+const float APOGEE_DETECTION_SPEED_THRESHOLD = -2; // m/s
+const float APOGEE_DETECTION_ALTITUDE_THRESHOLD = 5; // meters
 
 const int PRELAUNCH_BUFFER_SIZE = SAMPLE_RATE * PRELAUNCH_BUFFER_DURATION;
 const int TOTAL_BUFFER_SIZE = SAMPLE_RATE * TOTAL_BUFFER_DURATION;
@@ -37,12 +38,14 @@ enum RocketState
 {
     ERROR,
     NOT_INITIALIZED,
-    IDLING,
+    IDLING_OPEN,
+    IDLING_CLOSED,
     WAITING_FOR_LAUNCH,
     ASCENDING,
-    DESCENDING,
+    FREE_FALLING,
+    PARACHUTE_FALLING,
     RECONNECTING,
-    SERVING_DATA
+    SENDING_DATA
 };
 
 struct FlightData 
@@ -50,7 +53,7 @@ struct FlightData
     unsigned long timestamp;
     float temperature;
     float pressure;
-    float altitude;
+    float relativeAltitude;
     float accelX;
     float accelY;
     float accelZ;
@@ -72,23 +75,26 @@ int prelaunchBufferIndex = 0;
 FlightData* flightBuffer = NULL; 
 int flightBufferIndex = 0;
 Servo parachuteServo;
+long int lastWifiTryTime = 0; //ms
 
 // Function prototypes
 
-bool setupWifiConnectionAndIdentifyRocket();
-bool identifyRocket();
-void setupAPIEndpoints();
+bool setupWifiConnection(int attempts);
+
 bool setupPressureSensor();
 bool setupAccelerationSensor();
 bool setupI2C();
 void scanI2CDevices();
+
+bool tryToConnectToLaunchpad();
 
 void changeState(RocketState newState);
 String stateToString(RocketState state);
 
 bool detectLaunch(const FlightData &data);
 bool detectLanding(const FlightData &data);
-bool detectApogee(const FlightData &data);
+bool shouldOpenParachute(const FlightData &data);
+bool detectApogee(const FlightData &data, unsigned long deltaTime);
 
 FlightData getCurrentFlightData();
 void getPressureAndTemperature(float &pressure, float &temperature);
@@ -102,50 +108,56 @@ void recordData(const FlightData &data);
 void copyPrelaunchBufferToFlightBuffer();
 bool resetDataBuffers();
 
-void handleAPIIsIdling();
-void handleAPIGetVolume();
 void handleAPIStartWaitingForLaunch();
-void handleAPIIsWaitingForLaunch();
-void handleAPIGetFlightData();
-void handleAPIReturnToIdle();
+
+bool sendRocketState(int attempts);
+bool uploadFlightData(int attempts);
 
 
+void openParachute();
+void closeParachute();
+
+void validationBuzzer();
+void longErrorBuzzer();
+void shortErrorBuzzer();
 
 void setup() 
 {
     Serial.begin(115200);
     delay(1000);
 
+    Serial.println("\nSetup...");
 
     parachuteServo.attach(PARACHUTE_SERVO_PIN);
+    pinMode(BUZZER_PIN, OUTPUT);
 
-    parachuteServo.write(0); 
-    delay(1000);
-    parachuteServo.write(90);
-    delay(1000);
-    parachuteServo.write(180);
+    openParachute();
+
     delay(1000);
 
+    closeParachute();
 
-    Serial.println("\nInitialisation...");
+    delay(1000);
+
+    openParachute();
 
     bool initializationSuccess = true;
     initializationSuccess = initializationSuccess && setupI2C();
     initializationSuccess = initializationSuccess && setupAccelerationSensor();
     initializationSuccess = initializationSuccess && setupPressureSensor();
     initializationSuccess = initializationSuccess && resetDataBuffers();
-    initializationSuccess = initializationSuccess && setupWifiConnectionAndIdentifyRocket();
+    initializationSuccess = initializationSuccess && setupWifiConnection(15);
+    initializationSuccess = initializationSuccess && sendRocketState(5);
     if (!initializationSuccess) 
     {
-        Serial.println("Échec de l'initialisation du système. Mise en erreur.");
+        Serial.println("Échec du setup. Mise en erreur.");
         changeState(ERROR);
         return;
     }
 
-    setupAPIEndpoints();
-
-    Serial.println("Initialisation terminée.\n");
-    changeState(IDLING);
+    Serial.println("Setup terminé.\n");
+    validationBuzzer();
+    changeState(IDLING_OPEN);
 }
 
 void loop() 
@@ -183,131 +195,70 @@ void loop()
         const FlightData data = getCurrentFlightData();
         recordData(data);
 
-        if (detectApogee(data)) 
+        if (detectApogee(data, deltaTime)) 
         {
-            changeState(DESCENDING);
+            changeState(FREE_FALLING);
         }
     }
-    else if (currentState == DESCENDING)
+    else if (currentState == FREE_FALLING)
     {
         const FlightData data = getCurrentFlightData();
         recordData(data);
 
+        if (shouldOpenParachute(data))
+        {
+            changeState(PARACHUTE_FALLING);
+        }
+    }
+    else if (currentState == PARACHUTE_FALLING)
+    {
+        const FlightData data = getCurrentFlightData();
+        recordData(data);
         if (detectLanding(data))
         {
             changeState(RECONNECTING);
         }
     }
-    else if (currentState == RECONNECTING)
-    {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            setupWifiConnectionAndIdentifyRocket();
-        }
-        else
-        {
-            changeState(SERVING_DATA);
-        }
-    }
-    else if (currentState == SERVING_DATA)
-    {
-        // TODO : Send data to launchpad and change state when finished
-
-        if (false) // todo : when finished
-        {
-            if (resetDataBuffers())
-            {
-                changeState(IDLING);
-            }
-            else
-            {
-                changeState(ERROR);
-            }
-        }
-    }
 }
-
-
 
 bool detectLaunch(const FlightData &data)
 {
-    return data.altitude - launchpadAltitude > LAUNCH_DETECTION_THRESHOLD;
+    return data.relativeAltitude >= LAUNCH_DETECTION_THRESHOLD;
 }
 
-
-
-bool setupWifiConnectionAndIdentifyRocket()
+bool setupWifiConnection(int attempts)
 {
     WiFi.disconnect();
     WiFi.mode(WIFI_STA);
 
     // DEBUG : Scan for available networks :
 
-    Serial.println("Scan des réseaux Wi-Fi disponibles...");
-    int n = WiFi.scanNetworks();
-    if (n == 0) 
+    // Serial.println("Scan des réseaux Wi-Fi disponibles...");
+    // int n = WiFi.scanNetworks();
+    // if (n == 0) 
+    // {
+    //     Serial.println("Aucun réseau Wi-Fi trouvé.");
+    //     return false;
+    // } 
+    // else 
+    // {
+    //     Serial.println("Réseaux Wi-Fi trouvés : " + String(n));
+    //     for (int i = 0; i < n; i++) 
+    //     {
+    //         Serial.println("- " + WiFi.SSID(i) + " (" + (100+WiFi.RSSI(i)) + "%)");
+    //     }
+    // }
+
+    for (int i = 0; i < attempts; i++) 
     {
-        Serial.println("Aucun réseau Wi-Fi trouvé.");
-        return false;
-    } 
-    else 
-    {
-        Serial.println("Réseaux Wi-Fi trouvés : " + String(n));
-        for (int i = 0; i < n; i++) 
+        if (tryToConnectToLaunchpad())
         {
-            Serial.println("- " + WiFi.SSID(i) + " (" + (100+WiFi.RSSI(i)) + "%)");
+            return true;
         }
+
+        shortErrorBuzzer();
     }
 
-    for (int i = 0; i < 15; i++) 
-    {
-        Serial.println("Tentative de connexion au réseau Wi-Fi du pas de tir...");
-        WiFi.begin(LAUNCHPAD_SSID, LAUNCHPAD_PASSWORD);
-
-        delay(2000);
-
-        if (WiFi.status() == WL_CONNECTED) 
-        {
-            launchpadIP = WiFi.gatewayIP().toString();
-
-            Serial.println("Connecté au réseau Wi-Fi du pas de tir. IP locale : " + WiFi.localIP().toString() + ", IP du pas de tir : " + launchpadIP);
-            return identifyRocket();
-        }
-    }
-
-    String reason = "";
-    switch (WiFi.status()) 
-    {
-        case WL_NO_SSID_AVAIL:
-            reason = "SSID non disponible.";
-            break;
-        case WL_CONNECT_FAILED:
-            reason = "Échec de la connexion.";
-            break;
-        case WL_CONNECTION_LOST:
-            reason = "Connexion perdue.";
-            break;
-        case WL_DISCONNECTED:
-            reason = "Déconnecté.";
-            break;
-        case WL_IDLE_STATUS:
-            reason = "État d'idle.";
-            break;
-        case WL_NO_SHIELD:
-            reason = "Pas de shield Wi-Fi.";
-            break;
-        case WL_SCAN_COMPLETED:
-            reason = "Scan terminé.";
-            break;
-        case WL_CONNECTED:
-            reason = "Déjà connecté.";
-            break;
-        default:
-            reason = "Raison inconnue : " + String(WiFi.status());
-            break;
-    }
-
-    Serial.println("Échec de la connexion au réseau Wi-Fi du pas de tir : " + reason);
     WiFi.disconnect();
     return false;
 }
@@ -371,9 +322,9 @@ FlightData getCurrentFlightData()
     getAcceleration(accelX, accelY, accelZ);
     getGyroscope(gyroX, gyroY, gyroZ);
     getPressureAndTemperature(pressure, temperature);
-    float altitude = pressureSensor.readAltitude();
+    float relativeAltitude = pressureSensor.readAltitude() - launchpadAltitude;
 
-    FlightData data = {millis(), temperature, pressure, altitude, accelX, accelY, accelZ, gyroX, gyroY, gyroZ};
+    FlightData data = {millis(), temperature, pressure, relativeAltitude, accelX, accelY, accelZ, gyroX, gyroY, gyroZ};
     return data;
 }
 
@@ -429,14 +380,12 @@ bool setupPressureSensor()
     }
 
     pressureSensor.setMode(DPS310_CONT_PRESTEMP);
-    pressureSensor.configurePressure(DPS310_128HZ, DPS310_128SAMPLES);
-    pressureSensor.configureTemperature(DPS310_128HZ, DPS310_128SAMPLES);
+    pressureSensor.configurePressure(DPS310_64HZ, DPS310_16SAMPLES);
+    pressureSensor.configureTemperature(DPS310_64HZ, DPS310_16SAMPLES);
 
     return true;
 
 }
-
-
 
 void changeState(RocketState newState) 
 {
@@ -445,57 +394,97 @@ void changeState(RocketState newState)
 
     if (newState == previousState) 
     {
-        Serial.println("Pas de changement d'état : " + stateToString(newState));
+        Serial.println("Pas de changement de state : " + stateToString(newState));
         return;
     }
 
-    Serial.println("Changement d'état : " + stateToString(previousState) + " -> " + stateToString(newState));
+    Serial.println("Changement de state : " + stateToString(previousState) + " -> " + stateToString(newState));
 
     if ((newState == NOT_INITIALIZED)
-        || (newState == IDLING && (previousState != SERVING_DATA && previousState != NOT_INITIALIZED))
-        || (newState == WAITING_FOR_LAUNCH && previousState != IDLING)
+        || (newState == IDLING_OPEN && previousState != SENDING_DATA && previousState != NOT_INITIALIZED && previousState != IDLING_CLOSED)
+        || (newState == IDLING_CLOSED && previousState != IDLING_OPEN)
+        || (newState == WAITING_FOR_LAUNCH && previousState != IDLING_CLOSED)
         || (newState == ASCENDING && previousState != WAITING_FOR_LAUNCH)
-        || (newState == DESCENDING && previousState != ASCENDING)
-        || (newState == RECONNECTING && previousState != DESCENDING)
-        || (newState == SERVING_DATA && previousState != RECONNECTING))
+        || (newState == FREE_FALLING && previousState != ASCENDING)
+        || (newState == PARACHUTE_FALLING && previousState != FREE_FALLING)
+        || (newState == RECONNECTING && previousState != PARACHUTE_FALLING)
+        || (newState == SENDING_DATA && previousState != RECONNECTING))
     { 
-        Serial.println("Erreur : impossible de passer à l'état " + stateToString(newState) + " depuis l'état " + stateToString(previousState) + ". Mise en erreur.");
+        Serial.println("Impossible de passer au state " + stateToString(newState) + " depuis " + stateToString(previousState) + ". Mise en erreur.");
         changeState(ERROR);
         return;
     }
 
+    if (newState == ERROR)
+    {
+        WiFi.disconnect();
+
+        for (int i = 0; i < 5; i++)
+        {
+            longErrorBuzzer();
+            delay(1000);
+        }
+        ESP.restart();
+    }
+
+    if (newState != ERROR)
+    {
+        validationBuzzer();
+    }
+
     switch(newState) 
     {
-        case IDLING:
-            launchpadAltitude = getCurrentFlightData().altitude;
+        case ERROR:
+            sendRocketState(5);
 
-            if (previousState == SERVING_DATA)
-            {
-                bool success = resetDataBuffers();
-                if (!success)
-                {
-                    changeState(ERROR);
-                    return;
-                }
-            }
-
+        case IDLING_OPEN:
+            sendRocketState(5);
+            openParachute();
+            launchpadAltitude = pressureSensor.readAltitude();
             break;
 
-        case WAITING_FOR_LAUNCH:
+        case IDLING_CLOSED:
+            sendRocketState(5);
+            closeParachute();
+            launchpadAltitude = pressureSensor.readAltitude();
             break;
 
         case ASCENDING:
             copyPrelaunchBufferToFlightBuffer();
             WiFi.disconnect();
+            launchpadIP = "";
             break;
 
-        case DESCENDING:
+        case FREE_FALLING:
+            break;
+
+        case PARACHUTE_FALLING:
+            openParachute();
             break;
 
         case RECONNECTING:
+            if (setupWifiConnection(1000))
+            {
+                if (sendRocketState(5))
+                {
+                    changeState(SENDING_DATA);
+                }
+                else
+                {
+                    changeState(ERROR);
+                }
+            }
             break;
 
-        case SERVING_DATA:
+        case SENDING_DATA:
+            if (uploadFlightData(5))
+            {
+                changeState(IDLING_OPEN);
+            }
+            else
+            {
+                changeState(ERROR);
+            }
             break;
     }
 }
@@ -517,12 +506,14 @@ String stateToString(RocketState state)
     {
         case ERROR: return "ERROR";
         case NOT_INITIALIZED: return "NOT_INITIALIZED";
-        case IDLING: return "IDLING";
+        case IDLING_CLOSED: return "IDLING_CLOSED";
+        case IDLING_OPEN: return "IDLING_OPEN";
         case WAITING_FOR_LAUNCH: return "WAITING_FOR_LAUNCH";
         case ASCENDING: return "ASCENDING";
-        case DESCENDING: return "DESCENDING";
+        case FREE_FALLING: return "FREE_FALLING";
+        case PARACHUTE_FALLING: return "PARACHUTE_FALLING";
         case RECONNECTING: return "RECONNECTING";
-        case SERVING_DATA: return "SERVING_DATA";
+        case SENDING_DATA: return "SENDING_DATA";
         default: return "UNKNOWN";
     }
 }
@@ -531,7 +522,7 @@ bool detectLanding(const FlightData &data)
 {
     static unsigned long entryTime = 0; // milliseconds
 
-    if (data.altitude < launchpadAltitude + LANDING_DETECTION_ALTITUDE_THRESHOLD)
+    if (data.relativeAltitude < LANDING_DETECTION_ALTITUDE_THRESHOLD)
     {
         if (entryTime == 0) // just entered the zone
         {
@@ -552,21 +543,21 @@ bool detectLanding(const FlightData &data)
     }
 }
 
-bool identifyRocket()
+bool sendRocketState(int attempts)
 {
     if (launchpadIP == "") 
     {
-        Serial.println("Erreur : l'adresse IP du pas de tir n'est pas définie.");
+        Serial.println("L'adresse IP du pas de tir n'est pas définie. Impossible d'envoyer l'état de la fusée.");
         return false;
     }
 
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < attempts; i++)
     {
         HTTPClient httpClient;
-        String serverPath = "http://" + launchpadIP + "/api/identify-rocket";
+        String serverPath = "http://" + launchpadIP + "/api/new-rocket-state";
         
         JsonDocument doc;
-        doc["ip"] = WiFi.localIP().toString();
+        doc["rocket-state"] = stateToString(currentState);
         String payload;
         serializeJson(doc, payload);
         
@@ -582,33 +573,19 @@ bool identifyRocket()
     
         if (httpResponseCode == 200) 
         {
-            Serial.println("Fusée bien identifiée par le pas de tir.");
+            Serial.println("OK.");
             return true;
         } else 
         {
-            Serial.println("Erreur lors de l'envoi de la requête d'identification : " + String(httpResponseCode) + " - " + responsePayload);
+            Serial.println("Erreur : " + String(httpResponseCode) + " " + responsePayload);
         }
+
+        shortErrorBuzzer();
 
         delay(1000);
     }
-}
 
-void setupAPIEndpoints() 
-{
-    httpServer.begin();
-    
-    httpServer.on("/api/get-flight-data", HTTP_GET, handleAPIGetFlightData);
-    httpServer.on("/api/get-volume", HTTP_GET, handleAPIGetVolume);
-    httpServer.on("/api/is-idling", HTTP_GET, handleAPIIsIdling);
-    httpServer.on("/api/is-waiting-for-launch", HTTP_GET, handleAPIIsWaitingForLaunch);
-    httpServer.on("/api/start-waiting-for-launch", HTTP_POST, handleAPIStartWaitingForLaunch);
-    httpServer.on("/api/return-to-idle", HTTP_POST, handleAPIReturnToIdle);
-
-    httpServer.onNotFound([]() {
-        httpServer.send(404, "application/json", "{\"error\":\"Endpoint non trouvé\"}");
-    });
-
-    Serial.println("Serveur HTTP et endpoints API initialisés");
+    return false;
 }
 
 void getPressureAndTemperature(float& pressure, float& temperature)
@@ -643,33 +620,42 @@ float calculateMagnitude(float x, float y, float z)
     return sqrt(x * x + y * y + z * z);
 }
 
-bool detectApogee(const FlightData &data)
+bool detectApogee(const FlightData &data, unsigned long deltaTime)
 {
-    // TODO : implement apogee detection
-    return false;
+    // Speed calculation (using a circular buffer for smoothing)
+
+    static const int BUFFER_SIZE = 32;
+    static float previousAltitude = 0.0;
+    static int speedBufferIndex = 0;
+    static float speedBuffer[BUFFER_SIZE] = {0};
+
+    float currentSpeed = 1000 * (data.relativeAltitude - previousAltitude) / deltaTime; // m/s
+    previousAltitude = data.relativeAltitude;
+
+    speedBuffer[speedBufferIndex] = currentSpeed;
+    speedBufferIndex = (speedBufferIndex + 1) % BUFFER_SIZE;
+
+    float avgSpeed = 0.0;
+    for (int i = 0; i < BUFFER_SIZE; i++) 
+    {
+        avgSpeed += speedBuffer[i];
+    }
+    avgSpeed /= BUFFER_SIZE; // m/s
+
+    // Detection of apogee (using a threshold on the speed and altitude)
+
+    return avgSpeed <= APOGEE_DETECTION_SPEED_THRESHOLD && APOGEE_DETECTION_ALTITUDE_THRESHOLD <= data.relativeAltitude ;
 }
 
-void handleAPIIsIdling()
+bool shouldOpenParachute(const FlightData &data)
 {
-    JsonDocument doc;
-    doc["is-idling"] = (currentState == IDLING);
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
+    return (data.relativeAltitude <= LANDING_DETECTION_ALTITUDE_THRESHOLD);
 }
 
-void handleAPIGetVolume()
-{
-    JsonDocument doc;
-    doc["volume"] = VOLUME;
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
-}
 
 void handleAPIStartWaitingForLaunch()
 {   
-    if (currentState != IDLING) 
+    if (currentState != IDLING_CLOSED) 
     {
         httpServer.send(400, "application/json", "{\"error\":\"La fusée n'est pas prête\"}");
         return;
@@ -685,45 +671,144 @@ void handleAPIStartWaitingForLaunch()
 
 }
 
-void handleAPIIsWaitingForLaunch()
+bool tryToConnectToLaunchpad()
 {
-    JsonDocument doc;
-    doc["is-waiting-for-launch"] = (currentState == WAITING_FOR_LAUNCH);
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
+    Serial.println("Connexion au Wi-Fi du pas de tir...");
+    WiFi.begin(LAUNCHPAD_SSID, LAUNCHPAD_PASSWORD);
+
+    delay(2000);
+
+    if (WiFi.status() == WL_CONNECTED) 
+    {
+        launchpadIP = WiFi.gatewayIP().toString();
+
+        Serial.println("Connecté au Wi-Fi du pas de tir. IP locale : " + WiFi.localIP().toString() + ", IP du pas de tir : " + launchpadIP);
+        return true;
+    }
+    else
+    {
+        String reason = "";
+        switch (WiFi.status()) 
+        {
+            case WL_NO_SSID_AVAIL:
+                reason = "SSID non disponible.";
+                break;
+            case WL_CONNECT_FAILED:
+                reason = "Échec de la connexion.";
+                break;
+            case WL_CONNECTION_LOST:
+                reason = "Connexion perdue.";
+                break;
+            case WL_DISCONNECTED:
+                reason = "Déconnecté.";
+                break;
+            case WL_IDLE_STATUS:
+                reason = "État d'idle.";
+                break;
+            case WL_NO_SHIELD:
+                reason = "Pas de shield Wi-Fi.";
+                break;
+            case WL_SCAN_COMPLETED:
+                reason = "Scan terminé.";
+                break;
+            case WL_CONNECTED:
+                reason = "Déjà connecté.";
+                break;
+            default:
+                reason = "Raison inconnue : " + String(WiFi.status());
+                break;
+        }
+
+        Serial.println("Échec. Raison : " + reason);
+        WiFi.disconnect();
+        return false;
+    }
 }
 
-void handleAPIGetFlightData()
+void openParachute()
 {
-    if (flightBuffer == NULL || flightBufferIndex == 0) 
-    {
-        httpServer.send(404, "application/json", "{\"error\":\"Aucune donnée de vol disponible\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    JsonArray array = doc.to<JsonArray>();
-    for (int i = 0; i < flightBufferIndex; i++) 
-    {
-        JsonObject entry = array.createNestedObject();
-        entry["timestamp"] = flightBuffer[i].timestamp;
-        entry["temperature"] = flightBuffer[i].temperature;
-        entry["pressure"] = flightBuffer[i].pressure;
-        entry["altitude"] = flightBuffer[i].altitude;
-        entry["accelX"] = flightBuffer[i].accelX;
-        entry["accelY"] = flightBuffer[i].accelY;
-        entry["accelZ"] = flightBuffer[i].accelZ;
-        entry["gyroX"] = flightBuffer[i].gyroX;
-        entry["gyroY"] = flightBuffer[i].gyroY;
-        entry["gyroZ"] = flightBuffer[i].gyroZ;
-    }
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
+    Serial.println("Déploiement du parachute...");
+    parachuteServo.write(15); 
+    delay(1000); 
+    Serial.println("Parachute déployé.");
 }
 
-void handleAPIReturnToIdle()
+void closeParachute()
 {
+    Serial.println("Fermeture du parachute...");
+    parachuteServo.write(45); 
+    delay(1000); 
+    Serial.println("Parachute fermé.");
+}
 
+bool uploadFlightData(int attempts)
+{
+    if (launchpadIP == "") 
+    {
+        Serial.println("Erreur : l'adresse IP du pas de tir n'est pas définie.");
+        return false;
+    }
+
+    // for (int i = 0; i < attempts; i++)
+    // {
+    //     HTTPClient httpClient;
+    //     String serverPath = "http://" + launchpadIP + "/api/upload-flight-data";
+        
+    //     JsonDocument doc;
+    //     doc["flight-data"] = flightBuffer;
+    //     String payload;
+    //     serializeJson(doc, payload);
+        
+    //     httpClient.begin(serverPath);
+    //     httpClient.addHeader("Content-Type", "application/json");
+        
+    //     Serial.println("Envoi des données de vol au pas de tir...");
+    
+    //     int httpResponseCode = httpClient.POST(payload);
+    //     String responsePayload = httpClient.getString();
+
+    //     httpClient.end();
+    
+    //     if (httpResponseCode == 200) 
+    //     {
+    //         Serial.println("Données de vol envoyées avec succès.");
+    //         return true;
+    //     } 
+    //     else 
+    //     {
+    //         Serial.println("Erreur lors de l'envoi des données de vol au pas de tir : " + String(httpResponseCode) + " " + responsePayload);
+    //     }
+
+    //     shortErrorBuzzer();
+    //     delay(1000);
+    // }
+
+    // return false;
+}
+
+void validationBuzzer()
+{
+    analogWrite(BUZZER_PIN, 16);
+    delay(200);
+
+    analogWrite(BUZZER_PIN, 255);
+    delay(250);
+    
+    analogWrite(BUZZER_PIN, LOW);
+}
+
+void longErrorBuzzer()
+{
+    analogWrite(BUZZER_PIN, 16);
+    delay(500);
+
+    analogWrite(BUZZER_PIN, LOW);
+}
+
+void shortErrorBuzzer()
+{
+    analogWrite(BUZZER_PIN, 16);
+    delay(50);
+
+    analogWrite(BUZZER_PIN, LOW);
 }

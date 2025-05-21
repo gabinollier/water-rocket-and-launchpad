@@ -2,6 +2,14 @@ import { webSocket } from "../modules/websocket.js";
 
 let logs = [];
 
+fetchLogs();
+listenWebSocket();
+
+export const onPageLoad = () => {
+    updateUI();
+    setupServoControls();
+};
+
 function updateUI() {
     const logsElement = document.getElementById("logs");
     logsElement.innerHTML = logs
@@ -45,9 +53,45 @@ function listenWebSocket()
     };
 }
 
-fetchLogs();
-listenWebSocket();
+function setupServoControls() {
+    document.getElementById("rotate-servo-plus-2")?.addEventListener("click", () => rotateServo(2));
+    document.getElementById("rotate-servo-minus-2")?.addEventListener("click", () => rotateServo(-2));
 
-export const onPageLoad = () => {
-    updateUI();
-};
+    document.getElementById("rotate-servo-plus-120")?.addEventListener("click", () => {
+        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de 120° ? Si la fusée est pressurisée, elle va décoller"))
+        {
+            rotateServo(120);
+        }
+    });
+    document.getElementById("rotate-servo-minus-120")?.addEventListener("click", () => {
+        if (confirm("ATTENTION : Êtes-vous sûr de vouloir faire tourner le servo de -120° ? Si la fusée est pressurisée, elle va décoller"))
+        {
+            rotateServo(-120);
+        }
+    });
+
+}
+
+async function rotateServo(degrees) {
+    const turns = degrees / 360;
+    try {
+        const response = await fetch("/api/rotate-servo", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded", 
+            },
+            body: `turns=${turns}`, 
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error("Failed to rotate servo:", errorData.message);
+            alert(`Error rotating servo: ${errorData.message}`);
+        } else {
+            console.log(`Servo rotated by ${turns} turns.`);
+        }
+    } catch (error) {
+        console.error("Error calling rotate-servo API:", error);
+        alert("An error occurred while trying to rotate the servo.");
+    }
+}

@@ -3,24 +3,29 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <LittleFS.h> 
+#include <LittleFS.h>
 #include <DNSServer.h>
 #include <WebSocketsServer.h>
 #include <vector>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <ESP32Servo.h> 
 
 // Constants
 
 const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
 const char* externalWifiSSID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const char* externalWifiPassword = "";
+const char* externalWifiPassword = "badadabadaoui";
 const char* dnsName = "launchpad.local"; // on peut mettre autre chose que .local si on veut
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 2; // seconds
 const int MAX_LOGS = 200;
+const int DISTRIBUTOR_PIN_ATMO = 10;
+const int DISTRIBUTOR_PIN_COMP = 9;
+const int FLOW_METER_PIN = GPIO_NUM_6;
+const int SERVO_PIN = 12;
 
 // Data structures
 
@@ -46,15 +51,18 @@ WebServer httpServer(80);
 WebSocketsServer webSocketServer = WebSocketsServer(81);
 DNSServer dnsServer;
 LaunchpadState currentLaunchpadState = NOT_INITIALIZED;
+String currentRocketState = "UNKNOWN";
 LogEntry logs[MAX_LOGS];
 int logIndex = 0;
-String rocketIP = "";
 float currentWaterVolume = 0.0;
 float targetWaterVolume = 0.0;
 float currentPressure = 0.0;
 float targetPressure = 0.0;
 unsigned long launchTime = 0;
 unsigned long deltaTime = 0;
+volatile int flowCount = 0;
+Servo lockServo; // Servo object for the lock system
+bool isLockSystemLocked = true;
 
 // Function declarations
 
@@ -75,24 +83,28 @@ void setupFileEndpoints();
 // API endpoint handlers
 void handleAPIGetRocketState();
 void handleAPIGetLogs();
-void handleAPIGetRocketVolume();
-void handleAPIGetAllFlightData();
 void handleAPIStartFilling();
 void handleAPILaunch();
 void handleAPIAbort();
 void handleAPINewRocketState();
 void handleAPIUploadFlightData();
 void handleAPIGetLaunchpadState();
+void handleAPIGetWaterVolume();
+void handleAPIGetPressure();
+void handleAPIGetAllFlightTimestamps();
+void handleAPIGetFlightData();
+void handleAPIRotateServo(); 
 
 // WebSocket senders
 void sendWSNewLog(String timestamp, String message);
 void sendWSNewLaunchpadState(String newLaunchpadState);
 void sendWSNewRocketState(String newRocketState);
 void sendWSFilling(float waterVolume, float pressure);
+void sendWSNewDataAvailable(unsigned long launchtime, float maxRelativeAltitude);
 
 // Hardware sensors
 float getPressure();
-float getFlow();
+void IRAM_ATTR flowMeterPulseCounter();
 
 // Hardware control functions
 void openValve();
@@ -102,23 +114,29 @@ void setPressureDistributorToCompressor();
 void setPressureDistributorToLocked();
 void closeLockSystem();
 void openLockSystem();
-
-// Communication with the rocket
-bool isRocketConnected();
-float getRocketVolume();
-void tellRocketToStartWaitingForLaunch();
-String getRocketState();
+void rotateServo(float turns);
 
 // Debug functions
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
 void println(String message);
 
-void setup() 
+void setup()
 {
     Serial.begin(115200);
     delay(1000);
 
-    println("\nInitialisation...");
+    pinMode(DISTRIBUTOR_PIN_ATMO, OUTPUT);
+    pinMode(DISTRIBUTOR_PIN_COMP, OUTPUT);
+    pinMode(FLOW_METER_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(FLOW_METER_PIN), flowMeterPulseCounter, RISING);
+
+    // Setup servo
+    lockServo.attach(SERVO_PIN);
+    lockServo.writeMicroseconds(1500); // Initialize servo to stopped state
+    println("Servo initialisé.");
+
+
+    println("\\nInitialisation...");
 
     bool setupSuccess = true;
 
@@ -146,14 +164,14 @@ void loop()
 
     deltaTime = millis() - previousMillis;
     previousMillis = millis();
-
+    
     dnsServer.processNextRequest();
     httpServer.handleClient();
     webSocketServer.loop();
 
     currentPressure = getPressure();
-    float flow = getFlow();
-    currentWaterVolume += flow * (deltaTime / 1000.0);
+    currentWaterVolume += flowCount * 0.00208;
+    flowCount = 0; 
 
     if (currentLaunchpadState == WATER_FILLING) 
     {
@@ -177,8 +195,13 @@ void loop()
             changeState(READY_FOR_LAUNCH);
         }
     }  
+    else if (currentLaunchpadState == READY_FOR_LAUNCH)
+    {
+        sendWSFilling(currentWaterVolume, currentPressure);
+    }
     else if (currentLaunchpadState == LAUNCHING) 
     {
+        sendWSFilling(0, currentPressure);
         if (millis() > launchTime + LAUNCH_CLEARING_DELAY * 1000) 
         { 
             changeState(IDLING);
@@ -220,6 +243,8 @@ void changeState(LaunchpadState newState)
     switch(newState) 
     {
         case IDLING:
+            currentWaterVolume = 0;
+            sendWSFilling(currentWaterVolume, currentPressure);
             closeLockSystem();
             closeValve();
             setPressureDistributorToAtmosphere();
@@ -237,12 +262,10 @@ void changeState(LaunchpadState newState)
             break;
 
         case READY_FOR_LAUNCH:
-            tellRocketToStartWaitingForLaunch();
             setPressureDistributorToLocked();
             break;
 
         case LAUNCHING:
-            rocketIP = "";
             launchTime = millis();
             openLockSystem();
             break;
@@ -279,7 +302,7 @@ bool setupWiFiAP()
 {
     WiFi.mode(WIFI_AP_STA); 
     WiFi.softAP(wifiSSID, wifiPassword);
-    WiFi.onEvent(onWifiEvent);
+    //WiFi.onEvent(onWifiEvent);
 
     println("Point d'accès WiFi initialisé. IP locale : " + WiFi.softAPIP().toString());
     return true;
@@ -295,28 +318,32 @@ bool setupConnectionToExternalWiFi()
 
     // DEBUG : Scan for available networks :
 
-    Serial.println("Scan des réseaux Wi-Fi disponibles...");
-    int n = WiFi.scanNetworks();
-    if (n == 0) 
-    {
-        Serial.println("Aucun réseau Wi-Fi trouvé.");
-        return false;
-    } 
-    else 
-    {
-        Serial.println("Réseaux Wi-Fi trouvés : " + String(n));
-        for (int i = 0; i < n; i++) 
-        {
-            Serial.println("- " + WiFi.SSID(i) + " (" + (100+WiFi.RSSI(i)) + "%)");
-        }
-    }
+    // Serial.println("Scan des réseaux Wi-Fi disponibles...");
+    // int n = WiFi.scanNetworks();
+    // if (n == 0) 
+    // {
+    //     Serial.println("Aucun réseau Wi-Fi trouvé.");
+    //     return false;
+    // } 
+    // else 
+    // {
+    //     Serial.println("Réseaux Wi-Fi trouvés : " + String(n));
+    //     for (int i = 0; i < n; i++) 
+    //     {
+    //         Serial.println("- " + WiFi.SSID(i) + " (" + (100+WiFi.RSSI(i)) + "%)");
+    //     }
+    // }
 
-    WiFi.begin(externalWifiSSID, externalWifiPassword);
+    WiFi.disconnect();
 
     int attemptCount = 0;
-    while (WiFi.status() != WL_CONNECTED && attemptCount < 20) 
+    while (WiFi.status() != WL_CONNECTED && attemptCount < 5) 
     {
-        delay(500);
+        delay(1000);
+        WiFi.begin(externalWifiSSID, externalWifiPassword);
+        println("Tentative de connexion au réseau Wi-Fi externe : " + String(attemptCount + 1) + "/5...");
+        delay(2000);
+        println("Statut de la connexion : " + String(WiFi.status()));
         attemptCount++;
     }
 
@@ -357,25 +384,31 @@ bool setupWebSocketServer()
     return true;
 }
 
-void setupAPIEndpoints() 
+void setupAPIEndpoints()
 {
     // Endpoint for the frontend
     httpServer.on("/api/get-logs", HTTP_GET, handleAPIGetLogs);
-    httpServer.on("/api/get-rocket-volume", HTTP_GET, handleAPIGetRocketVolume);
     httpServer.on("/api/get-rocket-state", HTTP_GET, handleAPIGetRocketState);
-    httpServer.on("/api/get-launchpad-state", HTTP_POST, handleAPIGetLaunchpadState);
+    httpServer.on("/api/get-launchpad-state", HTTP_GET, handleAPIGetLaunchpadState);
+    httpServer.on("/api/get-water-volume", HTTP_GET, handleAPIGetWaterVolume);
+    httpServer.on("/api/get-pressure", HTTP_GET, handleAPIGetPressure);
+    httpServer.on("/api/get-all-flight-timestamps", HTTP_GET, handleAPIGetAllFlightTimestamps);
+    httpServer.on("/api/get-flight-data", HTTP_GET, handleAPIGetFlightData);
+
     httpServer.on("/api/start-filling", HTTP_POST, handleAPIStartFilling);
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
     httpServer.on("/api/abort", HTTP_POST, handleAPIAbort);
+    httpServer.on("/api/rotate-servo", HTTP_POST, handleAPIRotateServo); 
 
     // Endpoints for the rocket
     httpServer.on("/api/new-rocket-state", HTTP_POST, handleAPINewRocketState);
+    httpServer.on("/api/upload-flight-data", HTTP_POST, handleAPIUploadFlightData);
 }
 
 void handleAPIGetRocketState()
 {
     JsonDocument doc;
-    doc["rocket-state"] = getRocketState();
+    doc["rocket-state"] = currentRocketState;;
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -385,6 +418,24 @@ void handleAPIGetLaunchpadState()
 {
     JsonDocument doc;
     doc["launchpad-state"] = launchpadStateToString(currentLaunchpadState);
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
+}
+
+void handleAPIGetWaterVolume() 
+{
+    JsonDocument doc;
+    doc["water-volume"] = currentWaterVolume;
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
+}
+
+void handleAPIGetPressure() 
+{
+    JsonDocument doc;
+    doc["pressure"] = getPressure();
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -418,7 +469,7 @@ void handleAPIGetLogs()
     JsonArray array = doc.to<JsonArray>();
     for (int i = 0; i < logIndex; i++) 
     {
-        JsonObject entry = array.createNestedObject();
+        JsonObject entry = array.add<JsonObject>();
         entry["timestamp"] = logs[i].timestamp;
         entry["message"] = logs[i].message;
     }
@@ -427,15 +478,47 @@ void handleAPIGetLogs()
     httpServer.send(200, "application/json", response);
 }
 
-void handleAPIGetAllFlightData()
+void handleAPIGetAllFlightTimestamps() 
 {
-    // TODO : Read all flight data from the SD card and send it to the client
+    // TODO : read them from the SD card
+
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    unsigned long now = millis();
+    for (int i = 0; i < 5; ++i) {
+        arr.add(now - (i * 60000UL)); // 1 minute apart
+    }
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
 }
 
-void handleAPIGetRocketVolume() 
+void handleAPIGetFlightData() 
 {
+    if (!httpServer.hasArg("timestamp")) {
+        httpServer.send(400, "application/json", "{\"error\":\"timestamp parameter required\"}");
+        return;
+    }
+
+    // TODO : read them from the SD card
+
+    unsigned long baseTimestamp = httpServer.arg("timestamp").toInt();
     JsonDocument doc;
-    doc["totalVolume"] = getRocketVolume();
+    JsonArray arr = doc.to<JsonArray>();
+    for (int i = 0; i < 50; ++i) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["timestamp"] = baseTimestamp + i * 100; // 100ms interval
+        obj["temperature"] = 20.0 + (rand() % 100) / 10.0; // 20-30°C
+        obj["pressure"] = 1.0 + (rand() % 100) / 100.0; // 1.0-2.0 bar
+        obj["relativeAltitude"] = (float)i * 0.5 + (rand() % 10) / 10.0; // Simulate climb
+        obj["accelX"] = ((rand() % 200) - 100) / 100.0;
+        obj["accelY"] = ((rand() % 200) - 100) / 100.0;
+        obj["accelZ"] = 9.8 + ((rand() % 200) - 100) / 100.0;
+        obj["gyroX"] = ((rand() % 200) - 100) / 10.0;
+        obj["gyroY"] = ((rand() % 200) - 100) / 10.0;
+        obj["gyroZ"] = ((rand() % 200) - 100) / 10.0;
+    }
+
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -447,7 +530,7 @@ void handleAPIStartFilling()
     {
         JsonDocument doc;
         doc["status"] = "error";
-        doc["message"] = "La fusée doit être verrouillée et en état IDLING";
+        doc["message"] = "Le pas de tir n'est pas prêt pour le remplissage, il est dans l'état " + launchpadStateToString(currentLaunchpadState) + " mais il devrait être dans l'état IDLING";
         String response;
         serializeJson(doc, response);
         httpServer.send(400, "application/json", response);
@@ -467,13 +550,12 @@ void handleAPIStartFilling()
 
     targetWaterVolume = httpServer.arg("water-volume").toFloat();
     targetPressure = httpServer.arg("pressure").toFloat();
-    float maxVolume = getRocketVolume();
 
-    if (targetWaterVolume <= 0 || targetWaterVolume > maxVolume) 
+    if (targetWaterVolume <= 0) 
     {
         JsonDocument doc;
         doc["status"] = "error";
-        doc["message"] = "Volume d'eau invalide (min : 0L | max : " + String(maxVolume) + "L | demandé : " + String(targetWaterVolume) + "L)";
+        doc["message"] = "Volume d'eau invalide (min : 0L | demandé : " + String(targetWaterVolume) + "L)";
         String response;
         serializeJson(doc, response);
         httpServer.send(400, "application/json", response);
@@ -518,7 +600,7 @@ void handleAPIAbort()
     httpServer.send(200, "application/json");
 }
 
-void handleAPINewRocketState() 
+void handleAPINewRocketState() // This API endpoint serves as the rocket authentication too
 {
     String body = httpServer.arg("plain");
     JsonDocument doc;
@@ -530,23 +612,73 @@ void handleAPINewRocketState()
         return;
     }
 
-    if (!doc.containsKey("rocket-state")) 
+    if (!doc["rocket-state"].is<String>()) 
     {
         httpServer.send(400, "application/json", "{\"error\":\"Le champ rocket-state est requis\"}");
         return;
     }
 
-    String newRocketState = doc["rocket-state"].as<String>();
-    rocketIP = httpServer.client().remoteIP().toString();
+    currentRocketState = doc["rocket-state"].as<String>();
 
     httpServer.send(200, "application/json");
 
-    sendWSNewRocketState(newRocketState);
+    sendWSNewRocketState(currentRocketState);
 }
 
-void handleAPIUploadFlightData() 
+void handleAPIUploadFlightData()
 {
-    // TODO : Write the flight data to the SD card and send ok to the client if successful
+    String body = httpServer.arg("plain");
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, body);
+    if (error) {
+        httpServer.send(400, "application/json", "{\"error\":\"JSON invalide\"}");
+        return;
+    }
+    if (!doc.is<JsonArray>()) {
+        httpServer.send(400, "application/json", "{\"error\":\"Le corps doit être un tableau JSON\"}");
+        return;
+    }
+    JsonArray arr = doc.as<JsonArray>();
+    if (arr.size() == 0) {
+        httpServer.send(400, "application/json", "{\"error\":\"Aucune donnée fournie\"}");
+        return;
+    }
+    unsigned long launchtime = arr[0]["timestamp"] | 0;
+    float maxRelativeAltitude = -1000000.0;
+    for (JsonObject obj : arr) {
+        float relAlt = obj["relativeAltitude"] | 0.0;
+        if (relAlt > maxRelativeAltitude) maxRelativeAltitude = relAlt;
+    }
+    // TODO: Store flight data in SD card
+    sendWSNewDataAvailable(launchtime, maxRelativeAltitude);
+    httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void handleAPIRotateServo()
+{
+    if (!httpServer.hasArg("turns"))
+    {
+        JsonDocument doc;
+        doc["status"] = "error";
+        doc["message"] = "Le paramètre 'turns' est requis";
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(400, "application/json", response);
+        return;
+    }
+
+    float turns = httpServer.arg("turns").toFloat();
+
+    println("Rotation du servo demandée : " + String(turns) + " tours.");
+    rotateServo(turns);
+    println("Rotation du servo terminée.");
+
+    JsonDocument doc;
+    doc["status"] = "ok";
+    doc["message"] = "Servo tourné de " + String(turns) + " tours.";
+    String response;
+    serializeJson(doc, response);
+    httpServer.send(200, "application/json", response);
 }
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) // Just for debugging
@@ -616,6 +748,17 @@ void sendWSFilling(float waterVolume, float pressure)
     webSocketServer.broadcastTXT(jsonString);
 }
 
+void sendWSNewDataAvailable(unsigned long launchtime, float maxRelativeAltitude)
+{
+    JsonDocument doc;
+    doc["type"] = "new-data-available";
+    doc["launchtime"] = launchtime;
+    doc["maxRelativeAltitude"] = maxRelativeAltitude;
+    String jsonString;
+    serializeJson(doc, jsonString);
+    webSocketServer.broadcastTXT(jsonString);
+}
+
 void println(String message) 
 {
     Serial.println(message);
@@ -632,8 +775,13 @@ void println(String message)
     sendWSNewLog(String(millis()), message);
 }
 
-float getPressure() // TODO : Implement this function
+float getPressure() // TODO : Read pressure from the sensor
 {
+
+    if (currentLaunchpadState == LAUNCHING ||currentLaunchpadState == IDLING)
+    {
+        return 1.0;
+    }
     
     if (currentLaunchpadState == PRESSURIZING) {
         currentPressure += 0.3 * (deltaTime / 1000.0) * targetPressure;
@@ -641,141 +789,83 @@ float getPressure() // TODO : Implement this function
     }
 
     return currentPressure;
-    
 }
 
-float getFlow() // TODO : Implement this function
+void openValve()  // TODO : open the actual valve
 {
-    if (currentLaunchpadState == WATER_FILLING) {
-        println("Simulation : Remplissage en cours : " + String(currentWaterVolume) + "L");
-        return 0.15; // L/s
-    }
-    return 0.0;
+    println("Simulation : vanne ouverte");
 }
 
-void openValve()  // TODO : Implement this function
+void closeValve() // TODO : close the actual valve
 {
-    println("Simulation : Pompe activée");
+    println("Simulation : vanne fermée");
 }
 
-void closeValve() // TODO : Implement this function
+void setPressureDistributorToAtmosphere()
 {
-    println("Simulation : Pompe désactivée");
+    digitalWrite(DISTRIBUTOR_PIN_ATMO, HIGH);
+    digitalWrite(DISTRIBUTOR_PIN_COMP, LOW);
 }
 
-void setPressureDistributorToAtmosphere() // TODO : Implement this function
+void setPressureDistributorToCompressor() 
 {
-    println("Simulation : Distributeur de pression mis à l'atmosphère");
-    currentPressure = 1.0;
+    digitalWrite(DISTRIBUTOR_PIN_ATMO, LOW);
+    digitalWrite(DISTRIBUTOR_PIN_COMP, HIGH);
 }
 
-void setPressureDistributorToCompressor() // TODO : Implement this function
+void setPressureDistributorToLocked()
 {
-    println("Simulation : Distributeur de pression mis au compresseur");
+    digitalWrite(DISTRIBUTOR_PIN_ATMO, LOW);
+    digitalWrite(DISTRIBUTOR_PIN_COMP, LOW);
 }
 
-void setPressureDistributorToLocked() // TODO : Implement this function
+void closeLockSystem()
 {
-    println("Simulation : Distributeur de pression verrouillé");
-}
-
-void closeLockSystem() // TODO : Implement this function
-{
-    println("Simulation : Système de verrouillage fermé");
-}
-
-void openLockSystem() // TODO : Implement this function
-{
-    println("Simulation : Système de verrouillage ouvert");
-}
-
-bool isRocketConnected() 
-{
-    return rocketIP != "";
-}
-
-float getRocketVolume() 
-{
-    if (!isRocketConnected()) 
+    if (isLockSystemLocked) 
     {
-        println("Aucune fusée connectée, annulation...");
-        return 0.0;
-    }
-
-    HTTPClient httpClient;
-    String serverPath = "http://" + rocketIP + "/api/get-rocket-volume";
-    httpClient.begin(serverPath);
-
-    int httpResponseCode = httpClient.GET();
-    
-    if (httpResponseCode == 200) {
-        String payload = httpClient.getString();
-        JsonDocument doc;
-        deserializeJson(doc, payload);
-        float volume = doc["volume"];
-        httpClient.end();
-        return volume;
-    }
-    else
-    {
-        println("Erreur lors de la récupération du volume de la fusée : " + String(httpResponseCode));
-        httpClient.end();
-        return 0.0;
-    }
-
-}
-
-void tellRocketToStartWaitingForLaunch()
-{
-    if (!isRocketConnected()) 
-    {
-        println("Erreur lors de laD demande de préparation de la fusée au lancement : aucune fusée connectée");
         return;
     }
-
-    // Send a post request to rocketIP/api/get-ready-for-launch
-    HTTPClient httpClient;
-    String serverPath = "http://" + rocketIP + "/api/start-waiting-for-launch";
-    httpClient.begin(serverPath);
-
-    httpClient.addHeader("Content-Type", "application/json");
-    int httpResponseCode = httpClient.POST("{}");
-
-    if (httpResponseCode == 200) {
-        String payload = httpClient.getString();
-        JsonDocument doc;
-        deserializeJson(doc, payload);
-    }
-    else
-    {
-        println("Erreur lors de laD demande de préparation de la fusée au lancement : " + String(httpResponseCode));
-        httpClient.end();
-    }
+    isLockSystemLocked = true;
+    rotateServo(+0.33);
+    println("Système de verrouillage fermé.");
 }
 
-String getRocketState()
+void openLockSystem()
 {
-    if (!isRocketConnected()) 
+    if (!isLockSystemLocked) 
     {
-        return "DISCONNECTED";
+        return;
+    }
+    isLockSystemLocked = false;
+    rotateServo(-0.33);
+    println("Système de verrouillage ouvert.");
+}
+
+void rotateServo(float turns)
+{
+    const int DURATION_FOR_ONE_TURN = 1201; // milliseconds
+
+    int pulse_length = 1200; // microseconds
+
+    if (turns < 0)
+    {
+        turns *= -1;
+        pulse_length = 1700;
     }
 
-    HTTPClient httpClient;
-    String serverPath = "http://" + rocketIP + "/api/get-rocket-state";
-    httpClient.begin(serverPath);
-
-    int httpResponseCode = httpClient.GET();
+    float duration = DURATION_FOR_ONE_TURN * turns;
     
-    if (httpResponseCode == 200) 
+    unsigned long startTime = millis();
+    while (millis() < startTime + duration)
     {
-        String payload = httpClient.getString();
-        JsonDocument doc;
-        deserializeJson(doc, payload);
-        String rocketState = doc["rocket-state"];
-        httpClient.end();
-        return rocketState;
+        lockServo.writeMicroseconds(pulse_length);
+        delay(20); 
     }
-    
-    httpClient.end();
-    return "UNKNOWN";
+
+    lockServo.writeMicroseconds(1500);
+}
+
+void IRAM_ATTR flowMeterPulseCounter()
+{
+    flowCount++;
 }

@@ -1,5 +1,22 @@
 
-<h1 class="text-xl font-bold">Logs du pas de tir :</h1>
-<p id="logs"></p>
+<h2 class="text-lg font-semibold">Contrôle du servo :</h2>
 
-<!-- <script type="module" src="./js/logs.js"></script> --> 
+<p class="text-gray-700 text-sm">Note : Le système doit être en position vérouillée par défaut.</p>
+<div class="mt-2">
+    <button id="rotate-servo-minus-2" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl mx-2">
+        &larr; -0.02°
+    </button>
+    <button id="rotate-servo-plus-2" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl mx-2">
+        +0.02° &rarr;
+    </button>
+
+    <button id="rotate-servo-minus-120" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl mx-2">
+        &larr; -120°
+    </button>
+    <button id="rotate-servo-plus-120" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl mx-2">
+        +120° &rarr;
+    </button>
+</div>
+
+<h2 class="text-lg font-semibold mt-4">Logs du pas de tir :</h2>
+<p id="logs" class="mt-2"></p>

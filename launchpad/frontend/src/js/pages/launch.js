@@ -1,435 +1,279 @@
-import { webSocket } from "../websocket.js";
+import { webSocket } from "../modules/websocket.js";
+import { api } from "../modules/api.js";
 
-// State variables
-let currentState = 'setup'; // setup, filling, launch, post-launch
-let currentWaterVolume = 0;
-let targetWaterVolume = 250;
-let currentPressure = 0;
-let targetPressure = 40;
-let fillCompleted = false;
-let pressurizeCompleted = false;
-let countdownEnabled = false;
-let countdownInterval = null;
-let countdownValue = 5;
-let isRocketLocked = false;
-let isRocketReady = false;
+const statesController = {
+    launchpadState: "UNKNOWN",
+    rocketState: "UNKNOWN",
 
-// DOM Elements
-const setupPhase = document.getElementById('setup-phase');
-const fillingPhase = document.getElementById('filling-phase');
-const launchPhase = document.getElementById('launch-phase');
-const postLaunchPhase = document.getElementById('post-launch-phase');
-const abortButton = document.getElementById('abort-button');
-const fillButton = document.getElementById('fill-button');
-const confirmFillButton = document.getElementById('confirm-fill');
-const cancelFillButton = document.getElementById('cancel-fill');
-const confirmLockedCheckbox = document.getElementById('confirm-locked');
-const confirmClearedCheckbox = document.getElementById('confirm-cleared');
-const fillConfirmationModal = document.getElementById('fill-confirmation-modal');
-const waterVolumeInput = document.getElementById('water-volume');
-const pressureInput = document.getElementById('pressure');
-const launchButton = document.getElementById('launch-button');
-const enableCountdownCheckbox = document.getElementById('enable-countdown');
-const countdownDisplay = document.getElementById('countdown-display');
-const lockStatusElement = document.getElementById('lock-status');
-const rocketReadinessElement = document.getElementById('rocket-readiness');
-const waterVolumeCurrentElement = document.getElementById('water-volume-current');
-const waterVolumeTargetElement = document.getElementById('water-volume-target');
-const pressureCurrentElement = document.getElementById('pressure-current');
-const pressureTargetElement = document.getElementById('pressure-target');
-const waterProgressBar = document.getElementById('water-progress-bar');
-const pressureProgressBar = document.getElementById('pressure-progress-bar');
-const fillingStatusElement = document.getElementById('filling-status');
-const currentPressureDisplay = document.getElementById('current-pressure-display');
-const waitingReconnection = document.getElementById('waiting-reconnection');
-const dataTransmission = document.getElementById('data-transmission');
-const dataComplete = document.getElementById('data-complete');
-const dataProgress = document.getElementById('data-progress');
+    async setupStates() {
+        statesController.rocketState = await api.fetchRocketState();
+        statesController.launchpadState = await api.fetchLaunchpadState();
+        statesController.updateStateElements();
+    },
 
-export const onPageLoad = () => {
-    // Initialize UI
-    initializeUI();
+    updateStateElements() {
+        const rocketStateElement = document.getElementById("rocket-state");
+        if (rocketStateElement) {
+            rocketStateElement.textContent = statesController.getStateDisplayName(this.rocketState);
+            rocketStateElement.className = statesController.getStateCSSClass(this.rocketState);
+        }
     
-    // Setup event listeners
-    setupEventListeners();
-    
-    // Start WebSocket listener
-    setupWebSocketListener();
-    
-    // Check initial rocket status
-    checkRocketStatus();
+        const launchpadStateElement = document.getElementById("launchpad-state");
+        if (launchpadStateElement) {
+            launchpadStateElement.textContent = statesController.getStateDisplayName(this.launchpadState);
+            launchpadStateElement.className = statesController.getStateCSSClass(this.launchpadState);
+        }
+
+        stepOneController.updateButtonsStates();
+    },
+
+    getStateCSSClass(state) {
+        const stateClasses = {
+            "DISCONNECTED": "font-semibold text-red-600",
+            "UNKNOWN": "font-semibold text-red-600",
+            "ERROR": "font-semibold text-red-600",
+            "IDLING": "font-semibold text-green-600"
+        };
+        return stateClasses[state] || "font-semibold text-gray-700";
+    },
+
+    getStateDisplayName(state) {
+        if (state === "ERROR") 
+            return "Rocket error";
+        return state.charAt(0).toUpperCase() + state.slice(1).toLowerCase().replace(/_/g, ' ');
+    },
 };
 
-function initializeUI() {
-    // Set initial values
-    waterVolumeTargetElement.textContent = `${targetWaterVolume} ml`;
-    pressureTargetElement.textContent = `${targetPressure} PSI`;
+const stepOneController = {
+    setupStartFillingButton() {
+        const startFillingButton = document.getElementById('start-filling-button');
+        if (!startFillingButton) return;
     
-    // Show the setup phase initially
-    showPhase('setup');
+        startFillingButton.addEventListener('click', async () => {
+            const waterVolume = document.getElementById('water-volume').value;
+            const pressure = document.getElementById('pressure').value;
     
-    // Initialize abort button (hidden initially)
-    abortButton.classList.add('hidden');
-}
-
-function setupEventListeners() {
-    // Fill button click
-    fillButton.addEventListener('click', () => {
-        targetWaterVolume = parseInt(waterVolumeInput.value);
-        targetPressure = parseInt(pressureInput.value);
-        
-        // Update target displays
-        waterVolumeTargetElement.textContent = `${targetWaterVolume} ml`;
-        pressureTargetElement.textContent = `${targetPressure} PSI`;
-        
-        // Show confirmation modal
-        fillConfirmationModal.classList.remove('hidden');
-    });
-    
-    // Confirmation checkboxes
-    confirmLockedCheckbox.addEventListener('change', updateConfirmButtonState);
-    confirmClearedCheckbox.addEventListener('change', updateConfirmButtonState);
-    
-    // Cancel fill button
-    cancelFillButton.addEventListener('click', () => {
-        fillConfirmationModal.classList.add('hidden');
-        confirmLockedCheckbox.checked = false;
-        confirmClearedCheckbox.checked = false;
-        updateConfirmButtonState();
-    });
-    
-    // Confirm fill button
-    confirmFillButton.addEventListener('click', () => {
-        fillConfirmationModal.classList.add('hidden');
-        startFillingProcess();
-    });
-    
-    // Launch button
-    launchButton.addEventListener('click', () => {
-        if (countdownEnabled) {
-            startCountdown();
-        } else {
-            launchRocket();
-        }
-    });
-    
-    // Enable countdown checkbox
-    enableCountdownCheckbox.addEventListener('change', () => {
-        countdownEnabled = enableCountdownCheckbox.checked;
-        countdownDisplay.classList.toggle('hidden', !countdownEnabled);
-    });
-    
-    // Abort button
-    abortButton.addEventListener('click', abortProcess);
-}
-
-function updateConfirmButtonState() {
-    confirmFillButton.disabled = !(confirmLockedCheckbox.checked && confirmClearedCheckbox.checked);
-}
-
-function setupWebSocketListener() {
-    webSocket.onmessage = (event) => {
-        const wsMessage = JSON.parse(event.data);
-        
-        switch (wsMessage.type) {
-            case 'pressure':
-                updatePressureDisplay(wsMessage.pressure);
-                break;
-                
-            case 'water-volume':
-                updateWaterVolumeDisplay(wsMessage.volume);
-                break;
-                
-            case 'reconnected-with-rocket':
-                handleRocketReconnected();
-                break;
-                
-            case 'done-data-upload':
-                handleDataUploadComplete();
-                break;
-        }
-    };
-    
-    webSocket.onclose = () => {
-        console.error("WebSocket connection closed");
-        showError("Lost connection to the launchpad");
-    };
-}
-
-function checkRocketStatus() {
-    // Check rocket lock state
-    fetch('/api/get-lock-state')
-        .then(response => response.json())
-        .then(data => {
-            isRocketLocked = data.locked;
-            updateLockStatusDisplay();
-        })
-        .catch(error => {
-            console.error("Error checking lock state:", error);
-            showError("Failed to check rocket lock state");
-        });
-    
-    // Check rocket readiness
-    fetch('/api/get-rocket-readiness')
-        .then(response => response.json())
-        .then(data => {
-            isRocketReady = data.ready;
-            updateReadinessDisplay();
-        })
-        .catch(error => {
-            console.error("Error checking rocket readiness:", error);
-            showError("Failed to check rocket readiness");
-        });
-}
-
-function updateLockStatusDisplay() {
-    if (isRocketLocked) {
-        lockStatusElement.textContent = "Locked";
-        lockStatusElement.classList.add('text-green-600');
-        lockStatusElement.classList.remove('text-red-600');
-    } else {
-        lockStatusElement.textContent = "Unlocked";
-        lockStatusElement.classList.add('text-red-600');
-        lockStatusElement.classList.remove('text-green-600');
-    }
-}
-
-function updateReadinessDisplay() {
-    if (isRocketReady) {
-        rocketReadinessElement.textContent = "Ready";
-        rocketReadinessElement.classList.add('text-green-600');
-        rocketReadinessElement.classList.remove('text-red-600');
-    } else {
-        rocketReadinessElement.textContent = "Not Ready";
-        rocketReadinessElement.classList.add('text-red-600');
-        rocketReadinessElement.classList.remove('text-green-600');
-    }
-}
-
-function showPhase(phase) {
-    // Hide all phases
-    setupPhase.classList.add('hidden');
-    fillingPhase.classList.add('hidden');
-    launchPhase.classList.add('hidden');
-    postLaunchPhase.classList.add('hidden');
-    
-    // Show the selected phase
-    currentState = phase;
-    
-    switch (phase) {
-        case 'setup':
-            setupPhase.classList.remove('hidden');
-            abortButton.classList.add('hidden');
-            break;
-        case 'filling':
-            fillingPhase.classList.remove('hidden');
-            abortButton.classList.remove('hidden');
-            break;
-        case 'launch':
-            launchPhase.classList.remove('hidden');
-            abortButton.classList.remove('hidden');
-            break;
-        case 'post-launch':
-            postLaunchPhase.classList.remove('hidden');
-            abortButton.classList.add('hidden');
-            break;
-    }
-}
-
-function startFillingProcess() {
-    // Show the filling phase
-    showPhase('filling');
-    
-    // Reset progress indicators
-    fillCompleted = false;
-    pressurizeCompleted = false;
-    currentWaterVolume = 0;
-    currentPressure = 0;
-    updateProgressBars();
-    
-    // Lock the rocket
-    fetch('/api/lock-rocket')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                isRocketLocked = true;
-                updateLockStatusDisplay();
-                
-                // Start water filling
-                fillingStatusElement.textContent = "Starting water filling process...";
-                return fetch(`/api/start-water-filling?volume=${targetWaterVolume}`);
-            } else {
-                throw new Error("Failed to lock rocket");
+            if (statesController.launchpadState !== 'IDLING') {
+                alert("Le pas de tir n'est pas prêt. Merci de vérifier l'état du pas de tir.");
+                return;
             }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                fillingStatusElement.textContent = "Water filling in progress...";
-            } else {
-                throw new Error("Failed to start water filling");
-            }
-        })
-        .catch(error => {
-            console.error("Error in filling process:", error);
-            showError("Error: " + error.message);
-            abortProcess();
-        });
-}
-
-function updateWaterVolumeDisplay(volume) {
-    currentWaterVolume = volume;
-    waterVolumeCurrentElement.textContent = `${currentWaterVolume} ml`;
-    updateProgressBars();
     
-    // Check if water filling is complete
-    if (currentWaterVolume >= targetWaterVolume && !fillCompleted) {
-        fillCompleted = true;
-        fillingStatusElement.textContent = "Water filling complete. Starting pressurization...";
-        
-        // Start pressurization
-        fetch(`/api/start-pressurising?pressure=${targetPressure}`)
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    fillingStatusElement.textContent = "Pressurization in progress...";
-                } else {
-                    throw new Error("Failed to start pressurization");
+            if (statesController.rocketState !== 'IDLING') {
+                if (!confirm("La fusée n'est pas connectée ou bien n'est pas prête. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+                    return;
                 }
-            })
-            .catch(error => {
-                console.error("Error in pressurization:", error);
-                showError("Error: " + error.message);
-                abortProcess();
+            }
+    
+            api.startFilling(waterVolume, pressure).then((response) => {
+                if (response.ok) {
+                    console.log("Filling started successfully.");
+                } else {
+                    console.error("Failed to start filling:", response.statusText);
+                }
+            }).catch((error) => {
+                console.error("Error starting filling:", error);
             });
-    }
-}
-
-function updatePressureDisplay(pressure) {
-    currentPressure = pressure;
-    pressureCurrentElement.textContent = `${currentPressure} PSI`;
-    currentPressureDisplay.textContent = currentPressure;
-    updateProgressBars();
+        });
+    },
     
-    // Check if pressurization is complete
-    if (currentPressure >= targetPressure && !pressurizeCompleted && fillCompleted) {
-        pressurizeCompleted = true;
-        fillingStatusElement.textContent = "Pressurization complete. Ready for launch!";
-        
-        // Show launch phase after a short delay
-        setTimeout(() => {
-            showPhase('launch');
-        }, 2000);
-    }
-}
-
-function updateProgressBars() {
-    // Update water progress bar
-    const waterPercentage = Math.min((currentWaterVolume / targetWaterVolume) * 100, 100);
-    waterProgressBar.style.width = `${waterPercentage}%`;
-    
-    // Update pressure progress bar
-    const pressurePercentage = Math.min((currentPressure / targetPressure) * 100, 100);
-    pressureProgressBar.style.width = `${pressurePercentage}%`;
-}
-
-function startCountdown() {
-    countdownValue = 5;
-    countdownDisplay.textContent = countdownValue;
-    countdownDisplay.classList.remove('hidden');
-    launchButton.disabled = true;
-    
-    countdownInterval = setInterval(() => {
-        countdownValue--;
-        countdownDisplay.textContent = countdownValue;
-        
-        if (countdownValue <= 0) {
-            clearInterval(countdownInterval);
-            launchRocket();
+    updateSliderValue(id, value) {
+        const slider = document.getElementById(`${id}-slider`);
+        const input = document.getElementById(id);
+        if (slider && input) {
+            slider.value = value;
+            input.value = parseFloat(value.toFixed(2));
+            this.updateSliderProgress(slider);
         }
-    }, 1000);
-}
+    },
+    
+    updateSliderProgress(slider) {
+        const progress = slider.parentElement?.querySelector('.bg-gradient-to-r');
+        if (progress) {
+            const percentage = (slider.value - slider.min) / (slider.max - slider.min) * 100;
+            progress.style.width = `${percentage}%`;
+        }
+    },
+    
+    setupSlider(id, initialValue) {
+        const slider = document.getElementById(`${id}-slider`);
+        const input = document.getElementById(id);
+        if (slider && input) {
+            let value = initialValue;
+            if (value === null || isNaN(value)) {
+                value = parseFloat(slider.value); // fallback to default slider default
+            }
+            slider.value = value;
+            input.value = parseFloat(value.toFixed(2));
+            this.updateSliderProgress(slider);
 
-function launchRocket() {
-    // Clear any existing countdown
-    if (countdownInterval) {
-        clearInterval(countdownInterval);
-    }
-    
-    // Disable launch button
-    launchButton.disabled = true;
-    
-    // Call the launch API
-    fetch('/api/release-rocket')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                isRocketLocked = false;
-                updateLockStatusDisplay();
-                
-                // Show post-launch phase
-                showPhase('post-launch');
+            slider.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                input.value = value;
+                this.updateSliderProgress(slider);
+            });
+
+            input.addEventListener('change', (e) => {
+                let value = parseFloat(e.target.value);
+                value = Math.min(Math.max(value, parseFloat(slider.min)), parseFloat(slider.max));
+                input.value = value;
+                slider.value = value;
+                this.updateSliderProgress(slider);
+            });
+        }
+    },
+
+    updateButtonsStates() {
+        const waterProgressBar = document.getElementById('water-progress-bar');
+        const waterVolumeSlider = document.getElementById('water-volume-slider');
+        const pressureProgressBar = document.getElementById('pressure-progress-bar');
+        const pressureSlider = document.getElementById('pressure-slider');
+        const startFillingButton = document.getElementById('start-filling-button');
+
+        let fillingButtonEnabled = statesController.launchpadState === 'IDLING';
+
+        [waterProgressBar, waterVolumeSlider, pressureProgressBar, pressureSlider].forEach(element => {
+            if (element) {
+                element.disabled = !fillingButtonEnabled;
+                if (fillingButtonEnabled) {
+                    element.classList.remove('animate-pulse');
+                } else {
+                    element.classList.add('animate-pulse');
+                }
+            }
+        });
+
+        if (startFillingButton) {
+            // Update button text based on launchpad state
+            if (statesController.launchpadState === 'WATER_FILLING')
+            {
+                startFillingButton.textContent = "Remplissage de l'eau...";
+            }
+            else if (statesController.launchpadState === 'PRESSURIZING') 
+            {
+                startFillingButton.textContent = "Pressurisation...";
+            }
+            else if (statesController.launchpadState === 'READY_FOR_LAUNCH') 
+            {
+                startFillingButton.textContent = "Remplissage terminé";
+            } 
+            else 
+            {
+                startFillingButton.textContent = "Commencer le remplissage";
+            }
+
+            startFillingButton.disabled = !fillingButtonEnabled;
+            if (fillingButtonEnabled) {
+                startFillingButton.classList.remove('opacity-30', 'cursor-not-allowed');
+                startFillingButton.classList.add('hover:bg-blue-700');
             } else {
-                throw new Error("Failed to launch rocket");
+                startFillingButton.classList.add('opacity-30', 'cursor-not-allowed');
+                startFillingButton.classList.remove('hover:bg-blue-700');
             }
-        })
-        .catch(error => {
-            console.error("Error launching rocket:", error);
-            showError("Error: " + error.message);
-            // Re-enable launch button
-            launchButton.disabled = false;
-        });
-}
-
-function handleRocketReconnected() {
-    waitingReconnection.classList.add('hidden');
-    dataTransmission.classList.remove('hidden');
-    dataProgress.style.width = "0%";
-    
-    // Simulate progress (in a real implementation, this would be based on actual transfer progress)
-    let progress = 0;
-    const progressInterval = setInterval(() => {
-        progress += 5;
-        dataProgress.style.width = `${progress}%`;
-        
-        if (progress >= 100) {
-            clearInterval(progressInterval);
         }
-    }, 300);
-}
 
-function handleDataUploadComplete() {
-    dataTransmission.classList.add('hidden');
-    dataComplete.classList.remove('hidden');
-}
+        const launchButton = document.getElementById('launch-button');
 
-function abortProcess() {
-    // Call the abort API
-    fetch('/api/abort')
-        .then(response => response.json())
-        .then(data => {
-            showPhase('setup');
-            
-            // Clear any countdown
-            if (countdownInterval) {
-                clearInterval(countdownInterval);
+        if (launchButton) {
+            const canLaunch = statesController.launchpadState === 'READY_FOR_LAUNCH';
+            launchButton.disabled = !canLaunch;
+            if (canLaunch) {
+                launchButton.classList.remove('opacity-30', 'cursor-not-allowed');
+                launchButton.classList.add('hover:bg-red-700');
+            } else {
+                launchButton.classList.add('opacity-30', 'cursor-not-allowed');
+                launchButton.classList.remove('hover:bg-red-700');
             }
-            
-            // Reset checkboxes
-            confirmLockedCheckbox.checked = false;
-            confirmClearedCheckbox.checked = false;
-            enableCountdownCheckbox.checked = false;
-            
-            // Check rocket status again
-            checkRocketStatus();
-        })
-        .catch(error => {
-            console.error("Error aborting process:", error);
-            showError("Error during abort: " + error.message);
+        }
+    },
+
+    setupLaunchButton() {
+        const launchButton = document.getElementById('launch-button');
+        if (!launchButton) return;
+    
+        launchButton.addEventListener('click', () => {
+            if (statesController.launchpadState !== 'READY_FOR_LAUNCH') {
+                alert("Le pas de tir n'est pas prêt pour le lancement. Merci de vérifier l'état du pas de tir.");
+                return;
+            }
+    
+            if (statesController.rocketState !== 'WAITING_FOR_LAUNCH') {
+                if (!confirm("ATTENTION : La fusée n'est pas connectée ou bien n'est pas prête. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+                    return;
+                }
+            }
+    
+            api.launch().then((response) => {
+                if (response.ok) {
+                    console.log("Launched.");
+                } else {
+                    console.error("Failed to launch:", response.statusText);
+                }
+            }).catch((error) => {
+                console.error("Error launching:", error);
+            })
         });
+    },
+
+    setupAbortButton() {
+        const abortButton = document.getElementById('abort-button');
+        if (!abortButton) return;
+    
+        abortButton.addEventListener('click', () => {
+            api.abort().then((response) => {
+                if (response.ok) {
+                    console.log("Aborted.");
+                } else {
+                    console.error("Failed to abort:", response.statusText);
+                    alert("Failed to abort: " + response.statusText);
+                }
+            }).catch((error) => {
+                console.error("Error aborting:", error);
+                alert("Error aborting: " + error);
+            })
+        });
+    }
+
+};
+
+function setupWebSocketListeners() {
+    webSocket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "new-rocket-state") {
+            statesController.rocketState = data["rocket-state"];
+            statesController.updateStateElements();
+        }
+        else if (data.type === "new-launchpad-state") {
+            statesController.launchpadState = data["launchpad-state"];
+            statesController.updateStateElements();
+        }
+        else if (data.type === "filling") {
+            stepOneController.updateSliderValue('pressure', data["pressure"]);
+            stepOneController.updateSliderValue('water-volume', data["water-volume"]);
+        }
+        else if (data.type === "new-data-available") {
+            const date = new Date(data.launchtime);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            
+            document.getElementById('flight-time').textContent = `${hours}:${minutes}`;
+            document.getElementById('max-altitude').textContent = data.maxRelativeAltitude.toFixed(1);
+            document.getElementById('new-data-notification').classList.remove('hidden');
+        }
+    };
 }
 
-function showError(message) {
-    // Simple error handling - in a real app, you'd want a more sophisticated approach
-    alert(message);
-}
+export const onPageLoad = async () => {
+    await statesController.setupStates();
+
+    // Fetch initial pressure and water volume for UI initialization
+    const pressure = await api.fetchPressure();
+    const waterVolume = await api.fetchWaterVolume();
+    stepOneController.setupSlider('water-volume', waterVolume);
+    stepOneController.setupSlider('pressure', pressure);
+    stepOneController.setupStartFillingButton();
+    stepOneController.setupLaunchButton();
+    stepOneController.setupAbortButton();
+
+    setupWebSocketListeners();
+};

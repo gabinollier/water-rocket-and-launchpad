@@ -1,14 +1,6 @@
 import { onContentUpdate } from "./framework/router.js";
 import { toggleClasses } from "./framework/style-managment.js";
 
-// let currentURI = "/launch";
-// const titles = {
-//     "/launch" : "Launch",
-//     "/flight-data" : "Flight Data",
-//     "/debug" : "Debug du pas de tir",
-// };
-
-
 onContentUpdate((uri) => {
     toggleClasses(
         'nav a', 
