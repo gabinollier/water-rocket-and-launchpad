@@ -1,4 +1,5 @@
 import { webSocket } from "../modules/websocket.js";
+import { api } from "../modules/api.js";
 
 let logs = [];
 
@@ -8,6 +9,7 @@ listenWebSocket();
 export const onPageLoad = () => {
     updateUI();
     setupServoControls();
+    setupFairingControls();
 };
 
 function updateUI() {
@@ -90,8 +92,29 @@ async function rotateServo(degrees) {
         } else {
             console.log(`Servo rotated by ${turns} turns.`);
         }
-    } catch (error) {
-        console.error("Error calling rotate-servo API:", error);
+    } catch (error) {        console.error("Error calling rotate-servo API:", error);
         alert("An error occurred while trying to rotate the servo.");
+    }
+}
+
+function setupFairingControls() {
+    document.getElementById("close-fairing")?.addEventListener("click", () => controlFairing("close"));
+    document.getElementById("open-fairing")?.addEventListener("click", () => controlFairing("open"));
+}
+
+async function controlFairing(action) {
+    try {
+        const response = action === "close" ? await api.closeFairing() : await api.openFairing();
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error(`Failed to ${action} fairing:`, errorData.message);
+            alert(`Error ${action}ing fairing: ${errorData.message}`);
+        } else {
+            console.log(`Fairing ${action}ed successfully.`);
+        }
+    } catch (error) {
+        console.error(`Error calling ${action}-fairing API:`, error);
+        alert(`An error occurred while trying to ${action} the fairing.`);
     }
 }

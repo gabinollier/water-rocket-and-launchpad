@@ -32,7 +32,9 @@ const statesController = {
             "DISCONNECTED": "font-semibold text-red-600",
             "UNKNOWN": "font-semibold text-red-600",
             "ERROR": "font-semibold text-red-600",
-            "IDLING": "font-semibold text-green-600"
+            "IDLING": "font-semibold text-green-600",
+            "IDLING_CLOSED": "font-semibold text-green-600",
+            "IDLING_OPEN": "font-semibold text-orange-600",
         };
         return stateClasses[state] || "font-semibold text-gray-700";
     },
@@ -44,8 +46,7 @@ const statesController = {
     },
 };
 
-const stepOneController = {
-    setupStartFillingButton() {
+const stepOneController = {    setupStartFillingButton() {
         const startFillingButton = document.getElementById('start-filling-button');
         if (!startFillingButton) return;
     
@@ -58,8 +59,9 @@ const stepOneController = {
                 return;
             }
     
-            if (statesController.rocketState !== 'IDLING') {
-                if (!confirm("La fusée n'est pas connectée ou bien n'est pas prête. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+            // Check if rocket fairing is closed
+            if (statesController.rocketState !== 'IDLING_CLOSED') {
+                if (!confirm("ATTENTION : La coiffe de la fusée n'est pas fermée ou la fusée n'est pas connectée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
                     return;
                 }
             }
@@ -169,9 +171,7 @@ const stepOneController = {
                 startFillingButton.classList.add('opacity-30', 'cursor-not-allowed');
                 startFillingButton.classList.remove('hover:bg-blue-700');
             }
-        }
-
-        const launchButton = document.getElementById('launch-button');
+        }        const launchButton = document.getElementById('launch-button');
 
         if (launchButton) {
             const canLaunch = statesController.launchpadState === 'READY_FOR_LAUNCH';
@@ -184,9 +184,35 @@ const stepOneController = {
                 launchButton.classList.remove('hover:bg-red-700');
             }
         }
-    },
 
-    setupLaunchButton() {
+        // Handle fairing buttons visibility and state
+        const openFairingButton = document.getElementById('open-fairing-button');
+        const closeFairingButton = document.getElementById('close-fairing-button');
+
+        if (openFairingButton) {
+            // Show open fairing button only when rocket is IDLING_CLOSED and launchpad is IDLING
+            const shouldShowOpen = statesController.rocketState === 'IDLING_CLOSED' && statesController.launchpadState === 'IDLING';
+            openFairingButton.style.display = shouldShowOpen ? 'block' : 'none';
+            
+            if (shouldShowOpen) {
+                openFairingButton.disabled = false;
+                openFairingButton.classList.remove('opacity-30', 'cursor-not-allowed');
+                openFairingButton.classList.add('hover:bg-green-700');
+            }
+        }
+
+        if (closeFairingButton) {
+            // Show close fairing button only when rocket is IDLING_OPEN
+            const shouldShowClose = statesController.rocketState === 'IDLING_OPEN';
+            closeFairingButton.style.display = shouldShowClose ? 'block' : 'none';
+            
+            if (shouldShowClose) {
+                closeFairingButton.disabled = false;
+                closeFairingButton.classList.remove('opacity-30', 'cursor-not-allowed');
+                closeFairingButton.classList.add('hover:bg-orange-700');
+            }
+        }
+    },setupLaunchButton() {
         const launchButton = document.getElementById('launch-button');
         if (!launchButton) return;
     
@@ -196,8 +222,9 @@ const stepOneController = {
                 return;
             }
     
-            if (statesController.rocketState !== 'WAITING_FOR_LAUNCH') {
-                if (!confirm("ATTENTION : La fusée n'est pas connectée ou bien n'est pas prête. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+            // Check if rocket fairing is closed
+            if (statesController.rocketState !== 'IDLING_CLOSED') {
+                if (!confirm("ATTENTION : La coiffe de la fusée n'est pas fermée ou la fusée n'est pas connectée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
                     return;
                 }
             }
@@ -212,9 +239,7 @@ const stepOneController = {
                 console.error("Error launching:", error);
             })
         });
-    },
-
-    setupAbortButton() {
+    },    setupAbortButton() {
         const abortButton = document.getElementById('abort-button');
         if (!abortButton) return;
     
@@ -229,6 +254,44 @@ const stepOneController = {
             }).catch((error) => {
                 console.error("Error aborting:", error);
                 alert("Error aborting: " + error);
+            })
+        });
+    },
+
+    setupOpenFairingButton() {
+        const openFairingButton = document.getElementById('open-fairing-button');
+        if (!openFairingButton) return;
+    
+        openFairingButton.addEventListener('click', () => {
+            api.openFairing().then((response) => {
+                if (response.ok) {
+                    console.log("Fairing opened.");
+                } else {
+                    console.error("Failed to open fairing:", response.statusText);
+                    alert("Failed to open fairing: " + response.statusText);
+                }
+            }).catch((error) => {
+                console.error("Error opening fairing:", error);
+                alert("Error opening fairing: " + error);
+            })
+        });
+    },
+
+    setupCloseFairingButton() {
+        const closeFairingButton = document.getElementById('close-fairing-button');
+        if (!closeFairingButton) return;
+    
+        closeFairingButton.addEventListener('click', () => {
+            api.closeFairing().then((response) => {
+                if (response.ok) {
+                    console.log("Fairing closed.");
+                } else {
+                    console.error("Failed to close fairing:", response.statusText);
+                    alert("Failed to close fairing: " + response.statusText);
+                }
+            }).catch((error) => {
+                console.error("Error closing fairing:", error);
+                alert("Error closing fairing: " + error);
             })
         });
     }
@@ -274,6 +337,8 @@ export const onPageLoad = async () => {
     stepOneController.setupStartFillingButton();
     stepOneController.setupLaunchButton();
     stepOneController.setupAbortButton();
+    stepOneController.setupOpenFairingButton();
+    stepOneController.setupCloseFairingButton();
 
     setupWebSocketListeners();
 };

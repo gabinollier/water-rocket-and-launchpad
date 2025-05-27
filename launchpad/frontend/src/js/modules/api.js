@@ -70,11 +70,21 @@ export const api = {
         return await fetch("/api/launch", {
             method: 'POST'
         });
-    },
-
-    async abort()
+    },    async abort()
     {
         return await fetch("/api/abort", {
+            method: 'POST'
+        });
+    },
+
+    async closeFairing() {
+        return await fetch("/api/close-fairing", {
+            method: 'POST'
+        });
+    },
+
+    async openFairing() {
+        return await fetch("/api/open-fairing", {
             method: 'POST'
         });
     }

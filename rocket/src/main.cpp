@@ -4,11 +4,11 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <WebServer.h>
 #include <Adafruit_DPS310.h>
 #include <LSM6DS3.h>
 #include <Wire.h>
 #include <ESP32Servo.h>
+#include <WebSocketsClient.h>
 
 // Constants
 
@@ -68,7 +68,7 @@ String launchpadIP;
 RocketState currentState = NOT_INITIALIZED;
 Adafruit_DPS310 pressureSensor;
 LSM6DS3 accelerationSensor(I2C_MODE, 0x6A);
-WebServer httpServer(80);
+WebSocketsClient webSocketClient;
 float launchpadAltitude = 0.0; // meters
 FlightData prelaunchBuffer[PRELAUNCH_BUFFER_SIZE];
 int prelaunchBufferIndex = 0;
@@ -108,7 +108,7 @@ void recordData(const FlightData &data);
 void copyPrelaunchBufferToFlightBuffer();
 bool resetDataBuffers();
 
-void handleAPIStartWaitingForLaunch();
+void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 
 bool sendRocketState(int attempts);
 bool uploadFlightData(int attempts);
@@ -133,14 +133,6 @@ void setup()
 
     openParachute();
 
-    delay(1000);
-
-    closeParachute();
-
-    delay(1000);
-
-    openParachute();
-
     bool initializationSuccess = true;
     initializationSuccess = initializationSuccess && setupI2C();
     initializationSuccess = initializationSuccess && setupAccelerationSensor();
@@ -156,7 +148,6 @@ void setup()
     }
 
     Serial.println("Setup terminé.\n");
-    validationBuzzer();
     changeState(IDLING_OPEN);
 }
 
@@ -173,7 +164,8 @@ void loop()
     deltaTime = millis() - previousLoopTime;
     previousLoopTime = millis();
 
-    httpServer.handleClient();
+    webSocketClient.loop();
+
 
     if (currentState == ERROR) 
     {
@@ -652,24 +644,53 @@ bool shouldOpenParachute(const FlightData &data)
     return (data.relativeAltitude <= LANDING_DETECTION_ALTITUDE_THRESHOLD);
 }
 
-
-void handleAPIStartWaitingForLaunch()
-{   
-    if (currentState != IDLING_CLOSED) 
+void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    if (type == WStype_TEXT)
     {
-        httpServer.send(400, "application/json", "{\"error\":\"La fusée n'est pas prête\"}");
-        return;
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error) {
+            Serial.print(F("deserializeJson() failed: "));
+            Serial.println(error.f_str());
+            return;
+        }        
+        
+        String type = doc["type"];
+
+        Serial.print("Message websocket reçu. Type : ");
+        Serial.println(type);
+
+        if (type == "new-launchpad-state")
+        {
+            String newLaunchpadState = doc["launchpad-state"];
+            if (newLaunchpadState.length() > 0)
+            {
+                if (newLaunchpadState == "IDLING" && currentState != IDLING_CLOSED && currentState != IDLING_OPEN)
+                {
+                    changeState(IDLING_OPEN);
+                }
+                else if (newLaunchpadState == "PRESSURIZING")
+                {
+                    changeState(WAITING_FOR_LAUNCH);
+                }
+            }
+            
+        }
+
+        else if (type == "close-fairing")
+        {
+            changeState(IDLING_CLOSED);
+        }
+
+        else if (type == "open-fairing")
+        {
+            changeState(IDLING_OPEN);
+        }
     }
-
-    changeState(WAITING_FOR_LAUNCH);
-
-    JsonDocument doc;
-    doc["status"] = "success";
-    String response;
-    serializeJson(doc, response);
-    httpServer.send(200, "application/json", response);
-
+    
+    Serial.printf("[WS] Event type: %d, payload length: %d\n", type, length);
 }
+
 
 bool tryToConnectToLaunchpad()
 {
@@ -683,6 +704,11 @@ bool tryToConnectToLaunchpad()
         launchpadIP = WiFi.gatewayIP().toString();
 
         Serial.println("Connecté au Wi-Fi du pas de tir. IP locale : " + WiFi.localIP().toString() + ", IP du pas de tir : " + launchpadIP);
+
+        webSocketClient.begin(launchpadIP, 81, "/"); 
+        webSocketClient.onEvent(rocketWebSocketEvent);
+        webSocketClient.setReconnectInterval(1000);
+
         return true;
     }
     else

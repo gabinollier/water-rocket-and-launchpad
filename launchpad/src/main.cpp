@@ -9,23 +9,37 @@
 #include <vector>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <ESP32Servo.h> 
+#include <ESP32Servo.h>
+#include <SD.h>
+#include <SPI.h>
+#include "DFRobot_MPX5700.h"
 
 // Constants
 
 const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
 const char* externalWifiSSID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const char* externalWifiPassword = "badadabadaoui";
+const char* externalWifiPassword = NULL;
 const char* dnsName = "launchpad.local"; // on peut mettre autre chose que .local si on veut
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 2; // seconds
 const int MAX_LOGS = 200;
+#define PRESSURE_SENSOR_I2C_ADDRESS 0x16 // mpx5700AP
+DFRobot_MPX5700 pressureSensor(&Wire, PRESSURE_SENSOR_I2C_ADDRESS);
+
+// PINS
+const int SERVO_PIN = 12;
 const int DISTRIBUTOR_PIN_ATMO = 10;
 const int DISTRIBUTOR_PIN_COMP = 9;
-const int FLOW_METER_PIN = GPIO_NUM_6;
-const int SERVO_PIN = 12;
+const int FLOW_METER_PIN = 6;
+const int VALVE_PIN = 7;
+
+// SD Card pins
+const int SD_CS_PIN = 5;   // Chip Select pin for SD card
+const int SD_MOSI_PIN = 23; // MOSI pin
+const int SD_MISO_PIN = 19; // MISO pin  
+const int SD_SCK_PIN = 18;  // SCK pin
 
 // Data structures
 
@@ -72,6 +86,7 @@ void updatePressureAndIncrementVolume();
 
 // Setup functions
 bool setupFileSystem();
+bool setupSDCard();
 bool setupWiFiAP();
 bool setupConnectionToExternalWiFi();
 bool setupLocalDNS();
@@ -79,8 +94,11 @@ bool setupHttpServer();
 bool setupWebSocketServer();
 void setupAPIEndpoints();
 void setupFileEndpoints();
+bool setupPressureSensor();
 
 // API endpoint handlers
+void handleAPICloseFairing();
+void handleAPIOpenFairing();
 void handleAPIGetRocketState();
 void handleAPIGetLogs();
 void handleAPIStartFilling();
@@ -101,10 +119,12 @@ void sendWSNewLaunchpadState(String newLaunchpadState);
 void sendWSNewRocketState(String newRocketState);
 void sendWSFilling(float waterVolume, float pressure);
 void sendWSNewDataAvailable(unsigned long launchtime, float maxRelativeAltitude);
+void sendWSOpenFairing();
+void sendWSCloseFairing();
 
 // Hardware sensors
 float getPressure();
-void IRAM_ATTR flowMeterPulseCounter();
+void IRAM_ATTR onFlowMeterInterrupt();
 
 // Hardware control functions
 void openValve();
@@ -127,8 +147,10 @@ void setup()
 
     pinMode(DISTRIBUTOR_PIN_ATMO, OUTPUT);
     pinMode(DISTRIBUTOR_PIN_COMP, OUTPUT);
+    pinMode(VALVE_PIN, OUTPUT);
     pinMode(FLOW_METER_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(FLOW_METER_PIN), flowMeterPulseCounter, RISING);
+    attachInterrupt(digitalPinToInterrupt(FLOW_METER_PIN), onFlowMeterInterrupt, RISING);
+
 
     // Setup servo
     lockServo.attach(SERVO_PIN);
@@ -136,16 +158,17 @@ void setup()
     println("Servo initialisé.");
 
 
-    println("\\nInitialisation...");
-
+    println("\\nInitialisation...");    
     bool setupSuccess = true;
 
     setupSuccess = setupSuccess && setupFileSystem();
+    //setupSuccess = setupSuccess && setupSDCard(); //TODO : UNCOMMENT
     setupSuccess = setupSuccess && setupWiFiAP();
     setupConnectionToExternalWiFi();
     setupSuccess = setupSuccess && setupLocalDNS();
     setupSuccess = setupSuccess && setupHttpServer();
     setupSuccess = setupSuccess && setupWebSocketServer();
+    //setupSuccess = setupSuccess && setupPressureSensor(); //TODO : UNCOMMENT
 
     if (setupSuccess) 
     {
@@ -286,6 +309,25 @@ String launchpadStateToString(LaunchpadState state)
     }
 }
 
+bool setupPressureSensor() 
+{
+    Wire.begin();
+    pressureSensor.begin();
+    
+    for (int i = 0; i < 5; i++)
+    {
+        if (pressureSensor.begin())
+        {
+            println("Capteur de pression MPX5700 initialisé avec succès.");
+            pressureSensor.setMeanSampleSize(5);
+            return true;
+        }
+    }
+
+    
+    return false;
+}
+
 bool setupFileSystem() 
 {
     if (!LittleFS.begin(true)) 
@@ -295,6 +337,42 @@ bool setupFileSystem()
     }
 
     println("LittleFS initialisé avec succès.");
+    return true;
+}
+
+bool setupSDCard() 
+{
+    // Initialize SPI with custom pins
+    SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    
+    if (!SD.begin(SD_CS_PIN)) 
+    {
+        println("Échec de l'initialisation de la carte SD");
+        return false;
+    }
+    
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) 
+    {
+        println("Aucune carte SD détectée");
+        return false;
+    }
+    
+    println("Carte SD initialisée avec succès");
+    
+    // Create flight_data directory if it doesn't exist
+    if (!SD.exists("/flight_data")) 
+    {
+        if (SD.mkdir("/flight_data")) 
+        {
+            println("Dossier /flight_data créé");
+        } 
+        else 
+        {
+            println("Échec de la création du dossier /flight_data");
+        }
+    }
+    
     return true;
 }
 
@@ -399,6 +477,8 @@ void setupAPIEndpoints()
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
     httpServer.on("/api/abort", HTTP_POST, handleAPIAbort);
     httpServer.on("/api/rotate-servo", HTTP_POST, handleAPIRotateServo); 
+    httpServer.on("/api/close-fairing", HTTP_POST, handleAPICloseFairing);
+    httpServer.on("/api/open-fairing", HTTP_POST, handleAPIOpenFairing);
 
     // Endpoints for the rocket
     httpServer.on("/api/new-rocket-state", HTTP_POST, handleAPINewRocketState);
@@ -480,14 +560,50 @@ void handleAPIGetLogs()
 
 void handleAPIGetAllFlightTimestamps() 
 {
-    // TODO : read them from the SD card
-
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    unsigned long now = millis();
-    for (int i = 0; i < 5; ++i) {
-        arr.add(now - (i * 60000UL)); // 1 minute apart
+    
+    // Read flight timestamps from SD card
+    File root = SD.open("/flight_data");
+    if (!root) {
+        println("Erreur lors de l'ouverture du dossier /flight_data");
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(200, "application/json", response);
+        return;
     }
+    
+    if (!root.isDirectory()) {
+        println("/flight_data n'est pas un dossier");
+        root.close();
+        String response;
+        serializeJson(doc, response);
+        httpServer.send(200, "application/json", response);
+        return;
+    }
+    
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            String filename = String(file.name());
+            // Extract timestamp from filename (format: flight_TIMESTAMP.csv)
+            if (filename.startsWith("flight_") && filename.endsWith(".csv")) {
+                int startIndex = filename.indexOf("_") + 1;
+                int endIndex = filename.indexOf(".csv");
+                if (startIndex > 0 && endIndex > startIndex) {
+                    String timestampStr = filename.substring(startIndex, endIndex);
+                    unsigned long timestamp = timestampStr.toInt();
+                    if (timestamp > 0) {
+                        arr.add(timestamp);
+                    }
+                }
+            }
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+    
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -500,25 +616,60 @@ void handleAPIGetFlightData()
         return;
     }
 
-    // TODO : read them from the SD card
-
-    unsigned long baseTimestamp = httpServer.arg("timestamp").toInt();
+    // Read flight data from SD card CSV file
+    String timestamp = httpServer.arg("timestamp");
+    String filename = "/flight_data/flight_" + timestamp + ".csv";
+    
+    File file = SD.open(filename);
+    if (!file) {
+        println("Fichier de vol non trouvé : " + filename);
+        httpServer.send(404, "application/json", "{\"error\":\"Flight data not found\"}");
+        return;
+    }
+    
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    for (int i = 0; i < 50; ++i) {
+    
+    // Skip the CSV header line
+    String headerLine = file.readStringUntil('\n');
+    
+    // Read and parse each line of CSV data
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim(); // Remove any trailing whitespace
+        
+        if (line.length() == 0) continue; // Skip empty lines
+        
+        // Parse CSV line: timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ
+        int fieldIndex = 0;
+        int startIndex = 0;
         JsonObject obj = arr.add<JsonObject>();
-        obj["timestamp"] = baseTimestamp + i * 100; // 100ms interval
-        obj["temperature"] = 20.0 + (rand() % 100) / 10.0; // 20-30°C
-        obj["pressure"] = 1.0 + (rand() % 100) / 100.0; // 1.0-2.0 bar
-        obj["relativeAltitude"] = (float)i * 0.5 + (rand() % 10) / 10.0; // Simulate climb
-        obj["accelX"] = ((rand() % 200) - 100) / 100.0;
-        obj["accelY"] = ((rand() % 200) - 100) / 100.0;
-        obj["accelZ"] = 9.8 + ((rand() % 200) - 100) / 100.0;
-        obj["gyroX"] = ((rand() % 200) - 100) / 10.0;
-        obj["gyroY"] = ((rand() % 200) - 100) / 10.0;
-        obj["gyroZ"] = ((rand() % 200) - 100) / 10.0;
+        
+        for (int i = 0; i <= line.length(); i++) {
+            if (i == line.length() || line.charAt(i) == ',') {
+                String field = line.substring(startIndex, i);
+                
+                switch (fieldIndex) {
+                    case 0: obj["timestamp"] = field.toInt(); break;
+                    case 1: obj["temperature"] = field.toFloat(); break;
+                    case 2: obj["pressure"] = field.toFloat(); break;
+                    case 3: obj["relativeAltitude"] = field.toFloat(); break;
+                    case 4: obj["accelX"] = field.toFloat(); break;
+                    case 5: obj["accelY"] = field.toFloat(); break;
+                    case 6: obj["accelZ"] = field.toFloat(); break;
+                    case 7: obj["gyroX"] = field.toFloat(); break;
+                    case 8: obj["gyroY"] = field.toFloat(); break;
+                    case 9: obj["gyroZ"] = field.toFloat(); break;
+                }
+                
+                fieldIndex++;
+                startIndex = i + 1;
+            }
+        }
     }
-
+    
+    file.close();
+    
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
@@ -574,6 +725,18 @@ void handleAPIStartFilling()
     }
 
     changeState(WATER_FILLING);
+    httpServer.send(200, "application/json");
+}
+
+void handleAPICloseFairing() 
+{
+    sendWSCloseFairing();
+    httpServer.send(200, "application/json");
+}
+
+void handleAPIOpenFairing() 
+{
+    sendWSOpenFairing();
     httpServer.send(200, "application/json");
 }
 
@@ -642,14 +805,67 @@ void handleAPIUploadFlightData()
     if (arr.size() == 0) {
         httpServer.send(400, "application/json", "{\"error\":\"Aucune donnée fournie\"}");
         return;
-    }
-    unsigned long launchtime = arr[0]["timestamp"] | 0;
+    }    unsigned long launchtime = arr[0]["timestamp"] | 0;
     float maxRelativeAltitude = -1000000.0;
     for (JsonObject obj : arr) {
         float relAlt = obj["relativeAltitude"] | 0.0;
         if (relAlt > maxRelativeAltitude) maxRelativeAltitude = relAlt;
     }
-    // TODO: Store flight data in SD card
+    
+    // Store flight data in SD card as CSV
+    String filename = "/flight_data/flight_" + String(launchtime) + ".csv";
+    File file = SD.open(filename, FILE_WRITE);
+    
+    if (file) {
+        println("Enregistrement des données de vol dans " + filename);
+        
+        // Write CSV header
+        file.println("timestamp,temperature,pressure,relativeAltitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ");
+        
+        // Write each data point
+        for (JsonObject obj : arr) {
+            unsigned long timestamp = obj["timestamp"] | 0;
+            float temperature = obj["temperature"] | 0.0;
+            float pressure = obj["pressure"] | 0.0;
+            float relativeAltitude = obj["relativeAltitude"] | 0.0;
+            float accelX = obj["accelX"] | 0.0;
+            float accelY = obj["accelY"] | 0.0;
+            float accelZ = obj["accelZ"] | 0.0;
+            float gyroX = obj["gyroX"] | 0.0;
+            float gyroY = obj["gyroY"] | 0.0;
+            float gyroZ = obj["gyroZ"] | 0.0;
+            
+            file.print(timestamp);
+            file.print(",");
+            file.print(temperature, 2);
+            file.print(",");
+            file.print(pressure, 4);
+            file.print(",");
+            file.print(relativeAltitude, 2);
+            file.print(",");
+            file.print(accelX, 2);
+            file.print(",");
+            file.print(accelY, 2);
+            file.print(",");
+            file.print(accelZ, 2);
+            file.print(",");
+            file.print(gyroX, 2);
+            file.print(",");
+            file.print(gyroY, 2);
+            file.print(",");
+            file.println(gyroZ, 2);
+        }
+        
+        file.close();
+        println("Données de vol enregistrées avec succès (" + String(arr.size()) + " échantillons)");
+    } 
+    else 
+    {
+        println("Erreur lors de l'ouverture du fichier " + filename + " pour l'écriture");
+    }
+
+
+
     sendWSNewDataAvailable(launchtime, maxRelativeAltitude);
     httpServer.send(200, "application/json", "{\"status\":\"ok\"}");
 }
@@ -708,6 +924,26 @@ void sendWSNewLog(String timestamp, String message)
     doc["type"] = "new-log";
     doc["timestamp"] = timestamp;
     doc["message"] = message;
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    webSocketServer.broadcastTXT(jsonString);
+}
+
+void sendWSOpenFairing() 
+{
+    JsonDocument doc;
+    doc["type"] = "open-fairing";
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    webSocketServer.broadcastTXT(jsonString);
+}
+
+void sendWSCloseFairing() 
+{
+    JsonDocument doc;
+    doc["type"] = "close-fairing";
     
     String jsonString;
     serializeJson(doc, jsonString);
@@ -775,30 +1011,19 @@ void println(String message)
     sendWSNewLog(String(millis()), message);
 }
 
-float getPressure() // TODO : Read pressure from the sensor
+float getPressure() 
 {
-
-    if (currentLaunchpadState == LAUNCHING ||currentLaunchpadState == IDLING)
-    {
-        return 1.0;
-    }
-    
-    if (currentLaunchpadState == PRESSURIZING) {
-        currentPressure += 0.3 * (deltaTime / 1000.0) * targetPressure;
-        println("Simulation : Pressurisation en cours : " + String(currentPressure) + " bars");
-    }
-
-    return currentPressure;
+    return pressureSensor.getPressureValue_kpa(0) / 100.0; // Convert kPa to bar
 }
 
-void openValve()  // TODO : open the actual valve
+void openValve() 
 {
-    println("Simulation : vanne ouverte");
+    digitalWrite(VALVE_PIN, HIGH);
 }
 
-void closeValve() // TODO : close the actual valve
+void closeValve()
 {
-    println("Simulation : vanne fermée");
+    digitalWrite(VALVE_PIN, LOW);
 }
 
 void setPressureDistributorToAtmosphere()
@@ -865,7 +1090,7 @@ void rotateServo(float turns)
     lockServo.writeMicroseconds(1500);
 }
 
-void IRAM_ATTR flowMeterPulseCounter()
+void IRAM_ATTR onFlowMeterInterrupt()
 {
     flowCount++;
 }
