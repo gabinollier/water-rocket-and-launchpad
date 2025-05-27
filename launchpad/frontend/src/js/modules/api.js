@@ -59,6 +59,36 @@ export const api = {
         }
     },
 
+    async fetchAllFlightTimestamps() {
+        try {
+            const response = await fetch("/api/get-all-flight-timestamps");
+            if (!response.ok) {
+                console.error("Failed to fetch flight timestamps:", response.statusText);
+                return [];
+            }
+            const data = await response.json();
+            return Array.isArray(data) ? data : [];
+        } catch (error) {
+            console.error("Error fetching flight timestamps:", error);
+            return [];
+        }
+    },
+
+    async fetchFlightData(timestamp) {
+        try {
+            const response = await fetch(`/api/get-flight-data?timestamp=${timestamp}`);
+            if (!response.ok) {
+                console.error("Failed to fetch flight data:", response.statusText);
+                return null;
+            }
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error("Error fetching flight data:", error);
+            return null;
+        }
+    },
+
     async startFilling(waterVolume, pressure) {
         return await fetch(`/api/start-filling?water-volume=${waterVolume}&pressure=${pressure}`, {
             method: 'POST'
