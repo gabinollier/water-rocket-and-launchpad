@@ -1,14 +1,12 @@
-window.route = (event) => {
-    if (!event)
-    {
-        console.error("event parameter is required.");
-        return;
-    }
-        
+export const route = (event) => {
+
     event.preventDefault();
     window.history.pushState({}, "", event.target.href)
     updateContent();
 };
+
+// Also expose as window.route for backward compatibility
+window.route = route;
 
 export const onContentUpdate = (callback) => {
     if (typeof callback === "function") {
@@ -20,6 +18,7 @@ export const onContentUpdate = (callback) => {
 
 const updateContent = async() => {
     let uri = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
 
     if (uri === "" || uri === "/") 
         uri = defaultURI
@@ -31,7 +30,9 @@ const updateContent = async() => {
     const jsPath = getJsPath(uri);
     import(jsPath)
         .then(module => {
-            module.onPageLoad();
+            // Pass parameters to the page module
+            const paramsObject = Object.fromEntries(params);
+            module.onPageLoad(paramsObject);
         });
 
     contentUpdateListeners.forEach(callback => callback(uri));
@@ -52,7 +53,7 @@ const getJsPath = (uri) => {
 };
 
 const contentUpdateListeners = [];
-const URIs = ["/404", "/launch", "/flight-data", "/debug"]
+const URIs = ["/404", "/launch", "/flight-data-list", "/flight-data", "/debug"]
 const defaultURI = "/launch";
 
 window.onpopstate = updateContent;

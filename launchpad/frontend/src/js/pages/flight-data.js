@@ -1,118 +1,102 @@
-import { api } from '../modules/api.js';
+import { api } from "../modules/api.js";
 
-let flights = [];
-
-export const onPageLoad = async () => {
-    await loadFlights();
+export const onPageLoad = (args) => {
+    if (args && args.timestamp) {
+        showFlightData(args.timestamp);
+    }
+    else {
+        showTimestampRequired();
+    }
 };
 
-async function loadFlights() {
+async function showFlightData(timestamp) {
+    const flightDataContainer = document.querySelector('.bg-white.p-6.rounded-lg.shadow-md');
+    if (!flightDataContainer) return;
 
-    const loadingElement = document.getElementById('loading');
-    const noFlightsElement = document.getElementById('no-flights');
-    const flightsListElement = document.getElementById('flights-list');
-    
+    // Show loading message
+    const date = new Date(parseInt(timestamp));
+    const formattedDate = date.toLocaleString();
+    flightDataContainer.innerHTML = `
+        <h2>Flight Data for ${formattedDate}</h2>
+        <p>Loading flight data...</p>
+    `;
+
     try {
-        // Show loading state
-        loadingElement.classList.remove('hidden');
-        noFlightsElement.classList.add('hidden');
-        flightsListElement.classList.add('hidden');
-        
-        // Fetch flight timestamps
-        const timestamps = await api.fetchAllFlightTimestamps();
+        // Fetch flight data using the API
+        const flightData = await api.fetchFlightData(timestamp);
+        console.log("First data point timestamp from API:", flightData.length > 0 ? flightData[0].timestamp : "No data");
 
-        if (timestamps.length === 0) {
-            // No flights found
-            loadingElement.classList.add('hidden');
-            noFlightsElement.classList.remove('hidden');
+        if (!flightData || !Array.isArray(flightData) || flightData.length < 2) { // Need at least 2 points to calculate velocity
+            flightDataContainer.innerHTML = `
+                <h2>Flight Data for ${formattedDate}</h2>
+                <p>Not enough flight data to calculate velocities for this timestamp.</p>
+            `;
             return;
         }
-        
-        // Fetch flight data for each timestamp
-        flights = [];
-        for (const timestamp of timestamps) {
-            try {
-                const flightData = await api.fetchFlightData(timestamp);
-                if (flightData) {
-                    flights.push({
-                        timestamp: timestamp,
-                        data: flightData
-                    });
-                }
-            } catch (error) {
-                console.error(`Error loading flight data for timestamp ${timestamp}:`, error);
+
+        // Calculate velocities
+        const velocities = [];
+        let maxAltitude = -Infinity;
+
+        if (flightData.length > 0) {
+            maxAltitude = flightData[0].relativeAltitude;
+        }
+
+        for (let i = 0; i < flightData.length - 1; i++) {
+            const dataPoint1 = flightData[i];
+            const dataPoint2 = flightData[i+1];
+
+            if (dataPoint1.relativeAltitude > maxAltitude) {
+                maxAltitude = dataPoint1.relativeAltitude;
+            }
+            if (dataPoint2.relativeAltitude > maxAltitude) {
+                maxAltitude = dataPoint2.relativeAltitude;
+            }
+
+            const dt = Number(dataPoint2.timestamp) - Number(dataPoint1.timestamp);
+            
+            if (dt === 0) { // Avoid division by zero
+                velocities.push(0); 
+            } else {
+                const timeDiffSeconds = dt / 1000;
+                const velocity = (dataPoint2.relativeAltitude - dataPoint1.relativeAltitude) / timeDiffSeconds;
+                velocities.push(velocity);
             }
         }
-        
-        // Sort flights by timestamp (newest first)
-        flights.sort((a, b) => b.timestamp - a.timestamp);
-        
-        // Display flights
-        displayFlights();
-        
-        // Hide loading, show flights list
-        loadingElement.classList.add('hidden');
-        flightsListElement.classList.remove('hidden');
-        
+        // Ensure the last point's altitude is considered for maxAltitude if it's the highest
+        if (flightData.length > 0 && flightData[flightData.length -1].relativeAltitude > maxAltitude){
+            maxAltitude = flightData[flightData.length -1].relativeAltitude;
+        }
+
+        let maxVelocity = 0;
+        if (velocities.length > 0) {
+            maxVelocity = Math.max(...velocities.map(v => Math.abs(v))); // Consider absolute velocity for max
+        }
+
+        // Display max altitude and max velocity
+        let flightSummaryHtml = `
+            <h2>Flight Data for ${formattedDate}</h2>
+            <p><strong>Total data points:</strong> ${flightData.length}</p>
+            <h3>Flight Summary:</h3>
+            <p><strong>Maximum Altitude:</strong> ${maxAltitude.toFixed(2)} m</p>
+            <p><strong>Maximum Velocity:</strong> ${maxVelocity.toFixed(2)} m/s</p>
+            <p>${velocities}</p>
+        `;
+
+        flightDataContainer.innerHTML = flightSummaryHtml;
+
     } catch (error) {
-        console.error('Error loading flights:', error);
-        loadingElement.classList.add('hidden');
-        noFlightsElement.classList.remove('hidden');
+        console.error('Error loading or processing flight data:', error);
+        flightDataContainer.innerHTML = `
+            <h2>Flight Data for ${formattedDate}</h2>
+            <p style="color: red;">Error loading or processing flight data: ${error.message}</p>
+        `;
     }
 }
 
-function displayFlights() {
-    const flightsListElement = document.getElementById('flights-list');
-    flightsListElement.innerHTML = '';
-    
-    flights.forEach((flight, index) => {
-        const flightElement = createFlightElement(flight, index);
-        flightsListElement.appendChild(flightElement);
-    });
-}
-
-function createFlightElement(flight, index) {
-    const div = document.createElement('div');
-    div.className = 'bg-white border border-gray-200 rounded-lg p-4 hover:bg-gray-100 cursor-pointer transition-colors';
-    div.onclick = () => onFlightClick(flight, index);
-    
-    const formattedDate = formatTimestamp(flight.timestamp);
-    
-    div.innerHTML = `
-        <div class="flex justify-between items-center">
-            <div>
-                <h3 class="text-lg font-semibold text-gray-800">Vol #${index + 1}</h3>
-                <p class="text-gray-600">${formattedDate}</p>
-            </div>
-            <div class="text-right">
-                <div class="text-blue-600">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                    </svg>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    return div;
-}
-
-function formatTimestamp(timestamp) {
-    const date = new Date(timestamp);
-    const options = {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-    };
-    return date.toLocaleDateString('fr-FR', options);
-}
-
-function onFlightClick(flight, index) {
-    console.log(`Flight #${index + 1} clicked:`, flight);
-    // TODO: Implement detailed flight view with graphs
-    // This will be implemented later as requested
-    alert(`Vol #${index + 1} sélectionné. Affichage détaillé à venir...`);
+function showTimestampRequired() {
+    const flightDataContainer = document.querySelector('.bg-white.p-6.rounded-lg.shadow-md');
+    if (flightDataContainer) {
+        flightDataContainer.textContent = 'Timestamp is required to view flight data.';
+    }
 }

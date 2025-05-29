@@ -25,21 +25,22 @@ const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 2; // seconds
 const int MAX_LOGS = 200;
+const char* SD_FLIGHT_DATA_DIR = "/flight_data"; // Dossier de stockage des données de vol sur la carte SD
 #define PRESSURE_SENSOR_I2C_ADDRESS 0x16 // mpx5700AP
 DFRobot_MPX5700 pressureSensor(&Wire, PRESSURE_SENSOR_I2C_ADDRESS);
 
 // PINS
-const int SERVO_PIN = 12;
-const int DISTRIBUTOR_PIN_ATMO = 10;
-const int DISTRIBUTOR_PIN_COMP = 9;
+const int SERVO_PIN = 9;
+const int DISTRIBUTOR_PIN_ATMO = 5;
+const int DISTRIBUTOR_PIN_COMP = 6;
 const int FLOW_METER_PIN = 6;
 const int VALVE_PIN = 7;
 
 // SD Card pins
-const int SD_CS_PIN = 5;   // Chip Select pin for SD card
-const int SD_MOSI_PIN = 23; // MOSI pin
-const int SD_MISO_PIN = 19; // MISO pin  
-const int SD_SCK_PIN = 18;  // SCK pin
+const int SD_CS_PIN = 10;   // Chip Select pin for SD card
+const int SD_MOSI_PIN = 11; // MOSI pin
+const int SD_MISO_PIN = 12; // MISO pin  
+const int SD_SCK_PIN = 13;  // SCK pin
 
 // Data structures
 
@@ -145,24 +146,23 @@ void setup()
     Serial.begin(115200);
     delay(1000);
 
+    println("\\nInitialisation...");    
+    bool setupSuccess = true;
+
+    // Setup pins
     pinMode(DISTRIBUTOR_PIN_ATMO, OUTPUT);
     pinMode(DISTRIBUTOR_PIN_COMP, OUTPUT);
     pinMode(VALVE_PIN, OUTPUT);
     pinMode(FLOW_METER_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_METER_PIN), onFlowMeterInterrupt, RISING);
 
-
     // Setup servo
     lockServo.attach(SERVO_PIN);
     lockServo.writeMicroseconds(1500); // Initialize servo to stopped state
     println("Servo initialisé.");
 
-
-    println("\\nInitialisation...");    
-    bool setupSuccess = true;
-
     setupSuccess = setupSuccess && setupFileSystem();
-    //setupSuccess = setupSuccess && setupSDCard(); //TODO : UNCOMMENT
+    setupSuccess = setupSuccess && setupSDCard(); 
     setupSuccess = setupSuccess && setupWiFiAP();
     setupConnectionToExternalWiFi();
     setupSuccess = setupSuccess && setupLocalDNS();
@@ -357,19 +357,18 @@ bool setupSDCard()
         println("Aucune carte SD détectée");
         return false;
     }
-    
-    println("Carte SD initialisée avec succès");
+      println("Carte SD initialisée avec succès");
     
     // Create flight_data directory if it doesn't exist
-    if (!SD.exists("/flight_data")) 
+    if (!SD.exists(SD_FLIGHT_DATA_DIR)) 
     {
-        if (SD.mkdir("/flight_data")) 
+        if (SD.mkdir(SD_FLIGHT_DATA_DIR)) 
         {
-            println("Dossier /flight_data créé");
+            println("Dossier " + String(SD_FLIGHT_DATA_DIR) + " créé");
         } 
         else 
         {
-            println("Échec de la création du dossier /flight_data");
+            println("Échec de la création du dossier " + String(SD_FLIGHT_DATA_DIR));
         }
     }
     
@@ -523,7 +522,7 @@ void handleAPIGetPressure()
 
 void setupFileEndpoints() 
 {
-    const char* routesToIndex[] = {"", "/", "/launch", "/flight-data", "/debug"}; // URIs that serve index.html
+    const char* routesToIndex[] = {"", "/", "/launch", "/flight-data-list", "/flight-data", "/debug"}; // URIs that serve index.html
 
     for (const char* route : routesToIndex) 
     {
@@ -563,10 +562,9 @@ void handleAPIGetAllFlightTimestamps()
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     
-    // Read flight timestamps from SD card
-    File root = SD.open("/flight_data");
+    File root = SD.open(SD_FLIGHT_DATA_DIR);
     if (!root) {
-        println("Erreur lors de l'ouverture du dossier /flight_data");
+        println("Erreur lors de l'ouverture du dossier " + String(SD_FLIGHT_DATA_DIR));
         String response;
         serializeJson(doc, response);
         httpServer.send(200, "application/json", response);
@@ -574,7 +572,7 @@ void handleAPIGetAllFlightTimestamps()
     }
     
     if (!root.isDirectory()) {
-        println("/flight_data n'est pas un dossier");
+        println(String(SD_FLIGHT_DATA_DIR) + " n'est pas un dossier");
         root.close();
         String response;
         serializeJson(doc, response);
@@ -583,6 +581,7 @@ void handleAPIGetAllFlightTimestamps()
     }
     
     File file = root.openNextFile();
+
     while (file) {
         if (!file.isDirectory()) {
             String filename = String(file.name());
@@ -592,10 +591,7 @@ void handleAPIGetAllFlightTimestamps()
                 int endIndex = filename.indexOf(".csv");
                 if (startIndex > 0 && endIndex > startIndex) {
                     String timestampStr = filename.substring(startIndex, endIndex);
-                    unsigned long timestamp = timestampStr.toInt();
-                    if (timestamp > 0) {
-                        arr.add(timestamp);
-                    }
+                    arr.add(timestampStr);
                 }
             }
         }
@@ -614,11 +610,9 @@ void handleAPIGetFlightData()
     if (!httpServer.hasArg("timestamp")) {
         httpServer.send(400, "application/json", "{\"error\":\"timestamp parameter required\"}");
         return;
-    }
-
-    // Read flight data from SD card CSV file
+    }    // Read flight data from SD card CSV file
     String timestamp = httpServer.arg("timestamp");
-    String filename = "/flight_data/flight_" + timestamp + ".csv";
+    String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + timestamp + ".csv";
     
     File file = SD.open(filename);
     if (!file) {
@@ -650,7 +644,7 @@ void handleAPIGetFlightData()
                 String field = line.substring(startIndex, i);
                 
                 switch (fieldIndex) {
-                    case 0: obj["timestamp"] = field.toInt(); break;
+                    case 0: obj["timestamp"] = field; break;
                     case 1: obj["temperature"] = field.toFloat(); break;
                     case 2: obj["pressure"] = field.toFloat(); break;
                     case 3: obj["relativeAltitude"] = field.toFloat(); break;
@@ -811,9 +805,8 @@ void handleAPIUploadFlightData()
         float relAlt = obj["relativeAltitude"] | 0.0;
         if (relAlt > maxRelativeAltitude) maxRelativeAltitude = relAlt;
     }
-    
-    // Store flight data in SD card as CSV
-    String filename = "/flight_data/flight_" + String(launchtime) + ".csv";
+      // Store flight data in SD card as CSV
+    String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + String(launchtime) + ".csv";
     File file = SD.open(filename, FILE_WRITE);
     
     if (file) {
