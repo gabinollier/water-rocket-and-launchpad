@@ -25,7 +25,7 @@ const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
 const float LAUNCH_CLEARING_DELAY = 2; // seconds
 const int MAX_LOGS = 200;
-const char* SD_FLIGHT_DATA_DIR = "/flight_data"; // Dossier de stockage des données de vol sur la carte SD
+const char* SD_FLIGHT_DATA_DIR = "/flight_data"; 
 #define PRESSURE_SENSOR_I2C_ADDRESS 0x16 // mpx5700AP
 DFRobot_MPX5700 pressureSensor(&Wire, PRESSURE_SENSOR_I2C_ADDRESS);
 
@@ -37,10 +37,7 @@ const int FLOW_METER_PIN = 6;
 const int VALVE_PIN = 7;
 
 // SD Card pins
-const int SD_CS_PIN = 10;   // Chip Select pin for SD card
-const int SD_MOSI_PIN = 11; // MOSI pin
-const int SD_MISO_PIN = 12; // MISO pin  
-const int SD_SCK_PIN = 13;  // SCK pin
+const int SD_CS_PIN = 13;   // Chip Select pin for SD card
 
 // Data structures
 
@@ -76,7 +73,7 @@ float targetPressure = 0.0;
 unsigned long launchTime = 0;
 unsigned long deltaTime = 0;
 volatile int flowCount = 0;
-Servo lockServo; // Servo object for the lock system
+Servo lockServo;
 bool isLockSystemLocked = true;
 
 // Function declarations
@@ -114,6 +111,8 @@ void handleAPIGetAllFlightTimestamps();
 void handleAPIGetFlightData();
 void handleAPIDownloadFlightCSV();
 void handleAPIRotateServo();
+void handleAPISkipWaterFilling();
+void handleAPISkipPressurizing();
 
 // WebSocket senders
 void sendWSNewLog(String timestamp, String message);
@@ -169,7 +168,7 @@ void setup()
     setupSuccess = setupSuccess && setupLocalDNS();
     setupSuccess = setupSuccess && setupHttpServer();
     setupSuccess = setupSuccess && setupWebSocketServer();
-    //setupSuccess = setupSuccess && setupPressureSensor(); //TODO : UNCOMMENT
+    setupSuccess = setupSuccess && setupPressureSensor(); 
 
     if (setupSuccess) 
     {
@@ -193,7 +192,7 @@ void loop()
     httpServer.handleClient();
     webSocketServer.loop();
 
-    currentPressure = getPressure();
+    currentPressure = getPressure(); 
     currentWaterVolume += flowCount * 0.00208;
     flowCount = 0; 
 
@@ -344,7 +343,7 @@ bool setupFileSystem()
 bool setupSDCard() 
 {
     // Initialize SPI with custom pins
-    SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    SPI.begin();
     
     if (!SD.begin(SD_CS_PIN)) 
     {
@@ -477,7 +476,9 @@ void setupAPIEndpoints()
     httpServer.on("/api/start-filling", HTTP_POST, handleAPIStartFilling);
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
     httpServer.on("/api/abort", HTTP_POST, handleAPIAbort);
-    httpServer.on("/api/rotate-servo", HTTP_POST, handleAPIRotateServo); 
+    httpServer.on("/api/rotate-servo", HTTP_POST, handleAPIRotateServo);
+    httpServer.on("/api/skip-water-filling", HTTP_POST, handleAPISkipWaterFilling);
+    httpServer.on("/api/skip-pressurizing", HTTP_POST, handleAPISkipPressurizing);
     httpServer.on("/api/close-fairing", HTTP_POST, handleAPICloseFairing);
     httpServer.on("/api/open-fairing", HTTP_POST, handleAPIOpenFairing);
 
@@ -806,9 +807,12 @@ void handleAPINewRocketState() // This API endpoint serves as the rocket authent
 
 void handleAPIUploadFlightData()
 {
+    println("Receiving flight data... there are currently " + String(ESP.getFreeHeap()) + " bytes available in the heap");
+
     String body = httpServer.arg("plain");
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, body);
+
     if (error) {
         httpServer.send(400, "application/json", "{\"error\":\"JSON invalide\"}");
         return;
@@ -821,7 +825,9 @@ void handleAPIUploadFlightData()
     if (arr.size() == 0) {
         httpServer.send(400, "application/json", "{\"error\":\"Aucune donnée fournie\"}");
         return;
-    }    unsigned long launchtime = arr[0]["timestamp"] | 0;
+    }    
+    
+    unsigned long launchtime = arr[0]["timestamp"] | 0;
     float maxRelativeAltitude = -1000000.0;
     for (JsonObject obj : arr) {
         float relAlt = obj["relativeAltitude"] | 0.0;
@@ -910,6 +916,20 @@ void handleAPIRotateServo()
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
+}
+
+void handleAPISkipWaterFilling() 
+{
+    println("Skipping water filling.");
+    changeState(PRESSURIZING);
+    httpServer.send(200, "application/json", "{\"status\": \"Water filling skipped\"}");
+}
+
+void handleAPISkipPressurizing() 
+{
+    println("Skipping pressurizing.");
+    changeState(READY_FOR_LAUNCH);
+    httpServer.send(200, "application/json", "{\"status\": \"Pressurizing skipped\"}");
 }
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) // Just for debugging
@@ -1028,7 +1048,7 @@ void println(String message)
 
 float getPressure() 
 {
-    return pressureSensor.getPressureValue_kpa(0) / 100.0; // Convert kPa to bar
+    return pressureSensor.getPressureValue_kpa(1) / 100.0; // Convert kPa to bar
 }
 
 void openValve() 

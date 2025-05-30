@@ -84,6 +84,18 @@ async function showFlightData(timestamp) {
             }
         }        
         
+        const smoothedVelocities = [];
+        const windowSize = 4; 
+        for (let i = 0; i < velocities.length; i++) {
+            let sum = 0;
+            let count = 0;
+            for (let j = Math.max(0, i - windowSize + 1); j <= i; j++) {
+                sum += velocities[j];
+                count++;
+            }
+            smoothedVelocities.push(sum / count);
+        }
+
         // Display flight metrics
         flightMetricsContainer.innerHTML = `
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
@@ -116,7 +128,7 @@ async function showFlightData(timestamp) {
         
         // Charts
         createAltitudeChart(flightData);
-        createVelocityChart(flightData, velocities);
+        createVelocityChart(flightData, smoothedVelocities);
         createAccelerationChart(flightData);
         createGyroChart(flightData);
         createTemperatureChart(flightData);

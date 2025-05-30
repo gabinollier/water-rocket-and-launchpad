@@ -9,6 +9,8 @@ const statesController = {
         statesController.rocketState = await api.fetchRocketState();
         statesController.launchpadState = await api.fetchLaunchpadState();
         statesController.updateStateElements();
+
+
     },
 
     updateStateElements() {
@@ -40,13 +42,14 @@ const statesController = {
     },
 
     getStateDisplayName(state) {
-        if (state === "ERROR") 
-            return "Rocket error";
+        if (state === "WAITING_FOR_LAUNCH")
+            return "Waiting For Launch (Disconnected)";
         return state.charAt(0).toUpperCase() + state.slice(1).toLowerCase().replace(/_/g, ' ');
     },
 };
 
-const stepOneController = {    setupStartFillingButton() {
+const stepOneController = {    
+    setupStartFillingButton() {
         const startFillingButton = document.getElementById('start-filling-button');
         if (!startFillingButton) return;
     
@@ -60,8 +63,14 @@ const stepOneController = {    setupStartFillingButton() {
             }
     
             // Check if rocket fairing is closed
-            if (statesController.rocketState !== 'IDLING_CLOSED') {
-                if (!confirm("ATTENTION : La coiffe de la fusée n'est pas fermée ou la fusée n'est pas connectée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+            if (statesController.rocketState === 'IDLING_OPEN') {
+                if (!confirm("ATTENTION : La coiffe de la fusée n'est pas fermée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
+                    return;
+                }
+            }
+
+            else if (statesController.rocketState !== 'IDLING_CLOSED') {
+                if (!confirm("ATTENTION : La fusée semble déconnectée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
                     return;
                 }
             }
@@ -96,13 +105,23 @@ const stepOneController = {    setupStartFillingButton() {
         }
     },
     
-    setupSlider(id, initialValue) {
+    async setupSlider(id, initialValue) { // Made this async to await initial values
         const slider = document.getElementById(`${id}-slider`);
         const input = document.getElementById(id);
         if (slider && input) {
             let value = initialValue;
             if (value === null || isNaN(value)) {
-                value = parseFloat(slider.value); // fallback to default slider default
+                // Fetch initial values from the server if not provided
+                if (id === 'water-volume') {
+                    const settings = await api.fetchLaunchpadSettings();
+                    value = settings && settings.water_volume !== undefined ? settings.water_volume : parseFloat(slider.value);
+                } else if (id === 'pressure') {
+                    const settings = await api.fetchLaunchpadSettings();
+                    value = settings && settings.pressure !== undefined ? settings.pressure : parseFloat(slider.value);
+                }
+                else {
+                    value = parseFloat(slider.value); // fallback to default slider default
+                }
             }
             slider.value = value;
             input.value = parseFloat(value.toFixed(2));
@@ -125,18 +144,62 @@ const stepOneController = {    setupStartFillingButton() {
     },
 
     updateButtonsStates() {
+        const waterVolumeInput = document.getElementById('water-volume');
         const waterProgressBar = document.getElementById('water-progress-bar');
         const waterVolumeSlider = document.getElementById('water-volume-slider');
+        
+        const pressureInput = document.getElementById('pressure');
         const pressureProgressBar = document.getElementById('pressure-progress-bar');
         const pressureSlider = document.getElementById('pressure-slider');
+        
         const startFillingButton = document.getElementById('start-filling-button');
 
-        let fillingButtonEnabled = statesController.launchpadState === 'IDLING';
+        const isLaunchpadIdling = statesController.launchpadState === 'IDLING';
 
-        [waterProgressBar, waterVolumeSlider, pressureProgressBar, pressureSlider].forEach(element => {
+        // Gérer l'activation/désactivation des champs de formulaire et des sliders
+        const formControls = [waterVolumeInput, waterVolumeSlider, pressureInput, pressureSlider];
+        formControls.forEach(element => {
             if (element) {
-                element.disabled = !fillingButtonEnabled;
-                if (fillingButtonEnabled) {
+                element.disabled = !isLaunchpadIdling;
+                if (!isLaunchpadIdling) { // When disabled
+                    element.classList.add('cursor-not-allowed');
+                    if (element.type === 'range') { // Sliders
+                        element.classList.add('opacity-30'); // Opacity for sliders
+                        element.classList.remove('cursor-pointer');
+                    } else { // Input fields (water-volume, pressure)
+                        element.classList.remove('opacity-30'); // No general opacity for input fields
+                        if (element.id === 'water-volume') {
+                            element.classList.remove('focus:border-blue-700', 'border-blue-300');
+                            element.classList.add('border-gray-300'); // Use gray border for disabled
+                        } else if (element.id === 'pressure') {
+                            element.classList.remove('focus:border-red-700', 'border-red-300');
+                            element.classList.add('border-gray-300'); // Use gray border for disabled
+                        }
+                    }
+                } else { // When enabled (isLaunchpadIdling is true)
+                    element.classList.remove('cursor-not-allowed');
+                    if (element.type === 'range') { // Sliders
+                        element.classList.remove('opacity-30');
+                        element.classList.add('cursor-pointer');
+                    } else { // Input fields
+                        element.classList.remove('opacity-30'); 
+                        if (element.id === 'water-volume') {
+                            element.classList.remove('border-gray-300');
+                            element.classList.add('focus:border-blue-700', 'border-blue-300');
+                        } else if (element.id === 'pressure') {
+                            element.classList.remove('border-gray-300');
+                            element.classList.add('focus:border-red-700', 'border-red-300');
+                        }
+                    }
+                }
+            }
+        });
+
+        // Gérer l'effet de pulsation pour les barres de progression et les sliders
+        const elementsForPulseEffect = [waterProgressBar, waterVolumeSlider, pressureProgressBar, pressureSlider];
+        elementsForPulseEffect.forEach(element => {
+            if (element) {
+                if (isLaunchpadIdling) {
                     element.classList.remove('animate-pulse');
                 } else {
                     element.classList.add('animate-pulse');
@@ -144,34 +207,30 @@ const stepOneController = {    setupStartFillingButton() {
             }
         });
 
+        // Logique pour le bouton de remplissage (startFillingButton)
         if (startFillingButton) {
-            // Update button text based on launchpad state
-            if (statesController.launchpadState === 'WATER_FILLING')
-            {
+            // Mettre à jour le texte du bouton en fonction de l'état du pas de tir
+            if (statesController.launchpadState === 'WATER_FILLING') {
                 startFillingButton.textContent = "Remplissage de l'eau...";
-            }
-            else if (statesController.launchpadState === 'PRESSURIZING') 
-            {
+            } else if (statesController.launchpadState === 'PRESSURIZING') {
                 startFillingButton.textContent = "Pressurisation...";
-            }
-            else if (statesController.launchpadState === 'READY_FOR_LAUNCH') 
-            {
+            } else if (statesController.launchpadState === 'READY_FOR_LAUNCH') {
                 startFillingButton.textContent = "Remplissage terminé";
-            } 
-            else 
-            {
+            } else {
                 startFillingButton.textContent = "Commencer le remplissage";
             }
 
-            startFillingButton.disabled = !fillingButtonEnabled;
-            if (fillingButtonEnabled) {
+            startFillingButton.disabled = !isLaunchpadIdling; // Utilisation de la variable renommée
+            if (isLaunchpadIdling) {
                 startFillingButton.classList.remove('opacity-30', 'cursor-not-allowed');
                 startFillingButton.classList.add('hover:bg-blue-700');
             } else {
                 startFillingButton.classList.add('opacity-30', 'cursor-not-allowed');
                 startFillingButton.classList.remove('hover:bg-blue-700');
             }
-        }        const launchButton = document.getElementById('launch-button');
+        }
+        
+        const launchButton = document.getElementById('launch-button');
 
         if (launchButton) {
             const canLaunch = statesController.launchpadState === 'READY_FOR_LAUNCH';
@@ -193,53 +252,57 @@ const stepOneController = {    setupStartFillingButton() {
             // Show open fairing button only when rocket is IDLING_CLOSED and launchpad is IDLING
             const shouldShowOpen = statesController.rocketState === 'IDLING_CLOSED' && statesController.launchpadState === 'IDLING';
             openFairingButton.style.display = shouldShowOpen ? 'block' : 'none';
+            openFairingButton.disabled = statesController.launchpadState !== 'IDLING';
             
             if (shouldShowOpen) {
                 openFairingButton.disabled = false;
                 openFairingButton.classList.remove('opacity-30', 'cursor-not-allowed');
-                openFairingButton.classList.add('hover:bg-green-700');
             }
         }
 
         if (closeFairingButton) {
-            // Show close fairing button only when rocket is IDLING_OPEN
+            // Show close fairing button only when rocket is IDLING_OPEN and launchpad is IDLING
             const shouldShowClose = statesController.rocketState === 'IDLING_OPEN';
             closeFairingButton.style.display = shouldShowClose ? 'block' : 'none';
+            closeFairingButton.disabled = statesController.launchpadState !== 'IDLING';
             
             if (shouldShowClose) {
                 closeFairingButton.disabled = false;
                 closeFairingButton.classList.remove('opacity-30', 'cursor-not-allowed');
-                closeFairingButton.classList.add('hover:bg-orange-700');
             }
         }
-    },setupLaunchButton() {
+
+        // Handle skip buttons visibility
+        const skipWaterButton = document.getElementById('skip-water-button');
+        const skipPressureButton = document.getElementById('skip-pressure-button');
+
+        if (skipWaterButton) {
+            skipWaterButton.style.display = statesController.launchpadState === 'WATER_FILLING' ? 'block' : 'none';
+        }
+
+        if (skipPressureButton) {
+            skipPressureButton.style.display = statesController.launchpadState === 'PRESSURIZING' ? 'block' : 'none';
+        }
+    },
+    setupLaunchButton() {
         const launchButton = document.getElementById('launch-button');
-        if (!launchButton) return;
+        if (!launchButton)
+            return;
     
         launchButton.addEventListener('click', () => {
-            if (statesController.launchpadState !== 'READY_FOR_LAUNCH') {
-                alert("Le pas de tir n'est pas prêt pour le lancement. Merci de vérifier l'état du pas de tir.");
-                return;
-            }
-    
-            // Check if rocket fairing is closed
-            if (statesController.rocketState !== 'IDLING_CLOSED') {
-                if (!confirm("ATTENTION : La coiffe de la fusée n'est pas fermée ou la fusée n'est pas connectée. En cas de lancement, elle ne pourra pas déclencher son parachute. Êtes vous vraiment sûrs de vouloir continuer ?")) {
-                    return;
-                }
-            }
-    
             api.launch().then((response) => {
                 if (response.ok) {
-                    console.log("Launched.");
+                    statesController.rocketState = "DISCONNECTED"; 
+                    statesController.updateStateElements();
                 } else {
-                    console.error("Failed to launch:", response.statusText);
+                    console.error("Failed to send launch command:", response.statusText);
                 }
             }).catch((error) => {
-                console.error("Error launching:", error);
-            })
+                console.error("Error sending launch command:", error);
+            });
         });
-    },    setupAbortButton() {
+    },    
+    setupAbortButton() {
         const abortButton = document.getElementById('abort-button');
         if (!abortButton) return;
     
@@ -258,44 +321,66 @@ const stepOneController = {    setupStartFillingButton() {
         });
     },
 
-    setupOpenFairingButton() {
+    setupFairingButtons() {
         const openFairingButton = document.getElementById('open-fairing-button');
-        if (!openFairingButton) return;
-    
-        openFairingButton.addEventListener('click', () => {
-            api.openFairing().then((response) => {
-                if (response.ok) {
-                    console.log("Fairing opened.");
-                } else {
-                    console.error("Failed to open fairing:", response.statusText);
-                    alert("Failed to open fairing: " + response.statusText);
+        const closeFairingButton = document.getElementById('close-fairing-button');
+
+        if (openFairingButton) {
+            openFairingButton.addEventListener('click', async () => {
+                try {
+                    const response = await api.openFairing();
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                        console.error("Failed to open fairing:", errorData.message);
+                        alert(`Error opening fairing: ${errorData.message}`);
+                    } else {
+                        console.log("Fairing opened successfully.");
+                        statesController.rocketState = await api.fetchRocketState();
+                        statesController.updateStateElements();
+                    }
+                } catch (error) {
+                    console.error("Error calling open-fairing API:", error);
+                    alert("An error occurred while trying to open the fairing.");
                 }
-            }).catch((error) => {
-                console.error("Error opening fairing:", error);
-                alert("Error opening fairing: " + error);
-            })
-        });
+            });
+        }
+
+        if (closeFairingButton) {
+            closeFairingButton.addEventListener('click', async () => {
+                try {
+                    const response = await api.closeFairing();
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                        console.error("Failed to close fairing:", errorData.message);
+                        alert(`Error closing fairing: ${errorData.message}`);
+                    } else {
+                        console.log("Fairing closed successfully.");
+                        statesController.rocketState = await api.fetchRocketState();
+                        statesController.updateStateElements();
+                    }
+                } catch (error) {
+                    console.error("Error calling close-fairing API:", error);
+                    alert("An error occurred while trying to close the fairing.");
+                }
+            });
+        }
     },
 
-    setupCloseFairingButton() {
-        const closeFairingButton = document.getElementById('close-fairing-button');
-        if (!closeFairingButton) return;
-    
-        closeFairingButton.addEventListener('click', () => {
-            api.closeFairing().then((response) => {
-                if (response.ok) {
-                    console.log("Fairing closed.");
-                } else {
-                    console.error("Failed to close fairing:", response.statusText);
-                    alert("Failed to close fairing: " + response.statusText);
-                }
-            }).catch((error) => {
-                console.error("Error closing fairing:", error);
-                alert("Error closing fairing: " + error);
-            })
-        });
-    }
+    setupSkipButtons() {
+        const skipWaterButton = document.getElementById('skip-water-button');
+        if (skipWaterButton) {
+            skipWaterButton.addEventListener('click', async () => {
+                await api.skipWaterFilling();
+            });
+        }
 
+        const skipPressureButton = document.getElementById('skip-pressure-button');
+        if (skipPressureButton) {
+            skipPressureButton.addEventListener('click', async () => {
+                await api.skipPressurizing();
+            });
+        }
+    }
 };
 
 function setupWebSocketListeners() {
@@ -332,13 +417,22 @@ export const onPageLoad = async () => {
     // Fetch initial pressure and water volume for UI initialization
     const pressure = await api.fetchPressure();
     const waterVolume = await api.fetchWaterVolume();
+
+    // Show the launch procedure section and hide loading indicator
+    const loadingDiv = document.getElementById('loading-launch-procedure');
+    const launchProcedureSection = document.getElementById('launch-procedure-section');
+    if (loadingDiv && launchProcedureSection) {
+        loadingDiv.style.display = 'none';
+        launchProcedureSection.style.display = 'block';
+    }
+
     stepOneController.setupSlider('water-volume', waterVolume);
     stepOneController.setupSlider('pressure', pressure);
     stepOneController.setupStartFillingButton();
     stepOneController.setupLaunchButton();
     stepOneController.setupAbortButton();
-    stepOneController.setupOpenFairingButton();
-    stepOneController.setupCloseFairingButton();
+    stepOneController.setupFairingButtons();
+    stepOneController.setupSkipButtons();
 
     setupWebSocketListeners();
 };

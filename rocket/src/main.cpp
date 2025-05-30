@@ -14,23 +14,28 @@
 
 const char* LAUNCHPAD_SSID = "Pas de tir 🚀";
 const char* LAUNCHPAD_PASSWORD = "hippocampe";
-const unsigned long WIFI_CHECK_INVERVAL = 500; // ms 
-const float LAUNCH_DETECTION_THRESHOLD = 0.5; // meters
 const float g = 9.80665; // m/s²
-const int SAMPLE_RATE = 60; // Hz
 const int PRELAUNCH_BUFFER_DURATION = 2; // seconds
 const int TOTAL_BUFFER_DURATION = 60; // seconds
-const unsigned long LANDING_DETECTION_ALTITUDE_THRESHOLD = 2; // meters
-const unsigned long LANDING_DETECTION_DURATION = 5; // seconds
-const float VOLUME = 3.0; // liters
-const int PARACHUTE_SERVO_PIN = 10; 
-const int BUZZER_PIN = 6; 
-const float APOGEE_DETECTION_SPEED_THRESHOLD = -2; // m/s
-const float APOGEE_DETECTION_ALTITUDE_THRESHOLD = 5; // meters
 
-const int PRELAUNCH_BUFFER_SIZE = SAMPLE_RATE * PRELAUNCH_BUFFER_DURATION;
-const int TOTAL_BUFFER_SIZE = SAMPLE_RATE * TOTAL_BUFFER_DURATION;
-const unsigned long MIN_LOOP_TIME = 1000 / SAMPLE_RATE; 
+const int PARACHUTE_SERVO_PIN = 10;
+const int BUZZER_PIN = 6;
+
+const float LAUNCH_DETECTION_THRESHOLD = 0.5; // meters
+const float APOGEE_DETECTION_SPEED_THRESHOLD = 0; // m/s
+const float APOGEE_DETECTION_ALTITUDE_THRESHOLD = 1; // meters
+const int PARACHUTE_ALTITUDE_THRESHOLD = 60; // meters
+const int LANDING_DETECTION_ALTITUDE_THRESHOLD = 2; // meters
+const int LANDING_DETECTION_DURATION = 3; // seconds
+
+// Sampling rate constants
+const int HZ_WAITING_FOR_LAUNCH = 32; // Hz
+const int HZ_ASCENDING = 20; // Hz
+const int HZ_DEFAULT = 8; // Hz
+const unsigned long MAX_ASCENDING_DURATION = 10; // seconds
+
+const int PRELAUNCH_BUFFER_SIZE = HZ_WAITING_FOR_LAUNCH * PRELAUNCH_BUFFER_DURATION;
+const int TOTAL_BUFFER_SIZE = 400; // samples
 
 // Data structures
 
@@ -72,10 +77,11 @@ WebSocketsClient webSocketClient;
 float launchpadAltitude = 0.0; // meters
 FlightData prelaunchBuffer[PRELAUNCH_BUFFER_SIZE];
 int prelaunchBufferIndex = 0;
-FlightData* flightBuffer = NULL; 
+FlightData* flightBuffer = NULL;
 int flightBufferIndex = 0;
 Servo parachuteServo;
 long int lastWifiTryTime = 0; //ms
+unsigned long ascendingStateEnterTime = 0;
 
 // Function prototypes
 
@@ -94,7 +100,7 @@ String stateToString(RocketState state);
 bool detectLaunch(const FlightData &data);
 bool detectLanding(const FlightData &data);
 bool shouldOpenParachute(const FlightData &data);
-bool detectApogee(const FlightData &data, unsigned long deltaTime);
+bool detectApogee(const FlightData &data, int deltaTime);
 
 FlightData getCurrentFlightData();
 void getPressureAndTemperature(float &pressure, float &temperature);
@@ -113,6 +119,7 @@ void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 bool sendRocketState(int attempts);
 bool uploadFlightData(int attempts);
 
+unsigned long getSamplingIntervalMs(); // New function prototype
 
 void openParachute();
 void closeParachute();
@@ -120,6 +127,8 @@ void closeParachute();
 void validationBuzzer();
 void longErrorBuzzer();
 void shortErrorBuzzer();
+
+
 
 void setup() 
 {
@@ -153,29 +162,25 @@ void setup()
 
 void loop() 
 {
-    static unsigned long previousLoopTime = millis(); //ms
-    static unsigned long deltaTime = millis() - previousLoopTime; //ms
-
-    deltaTime = millis() - previousLoopTime;
-    if (deltaTime < MIN_LOOP_TIME)
-    {
-        delay(MIN_LOOP_TIME - deltaTime); 
-    }
-    deltaTime = millis() - previousLoopTime;
-    previousLoopTime = millis();
+    static unsigned long lastSampleTime = 0;
 
     webSocketClient.loop();
+    unsigned long currentTime = millis();
+    unsigned long currentSamplingInterval = getSamplingIntervalMs();
+    bool shouldSample = (currentTime - lastSampleTime >= currentSamplingInterval);
 
-
-    if (currentState == ERROR) 
+    if (shouldSample)
     {
-        return;
+        lastSampleTime = currentTime;
     }
 
-    else if (currentState == WAITING_FOR_LAUNCH)
+    if (currentState == WAITING_FOR_LAUNCH)
     {
         const FlightData data = getCurrentFlightData();
-        recordDataInPrelaunchBuffer(data);
+        if (shouldSample)
+        {
+            recordDataInPrelaunchBuffer(data);
+        }
 
         if (detectLaunch(data))
         {
@@ -185,9 +190,13 @@ void loop()
     else if (currentState == ASCENDING)
     {
         const FlightData data = getCurrentFlightData();
-        recordData(data);
 
-        if (detectApogee(data, deltaTime)) 
+        if (shouldSample)
+        {
+            recordData(data);
+        }
+
+        if (detectApogee(data, currentSamplingInterval)) 
         {
             changeState(FREE_FALLING);
         }
@@ -195,7 +204,11 @@ void loop()
     else if (currentState == FREE_FALLING)
     {
         const FlightData data = getCurrentFlightData();
-        recordData(data);
+
+        if (shouldSample)
+        {
+            recordData(data);
+        }
 
         if (shouldOpenParachute(data))
         {
@@ -205,12 +218,24 @@ void loop()
     else if (currentState == PARACHUTE_FALLING)
     {
         const FlightData data = getCurrentFlightData();
-        recordData(data);
+
+        if (shouldSample)
+        {
+            recordData(data);
+        }
+        
         if (detectLanding(data))
         {
             changeState(RECONNECTING);
         }
     }
+
+    if (currentState == ERROR)
+    {
+        return; 
+    }
+
+    delay(10);
 }
 
 bool detectLaunch(const FlightData &data)
@@ -372,8 +397,8 @@ bool setupPressureSensor()
     }
 
     pressureSensor.setMode(DPS310_CONT_PRESTEMP);
-    pressureSensor.configurePressure(DPS310_64HZ, DPS310_16SAMPLES);
-    pressureSensor.configureTemperature(DPS310_64HZ, DPS310_16SAMPLES);
+    pressureSensor.configurePressure(DPS310_64HZ, DPS310_8SAMPLES);
+    pressureSensor.configureTemperature(DPS310_64HZ, DPS310_8SAMPLES);
 
     return true;
 
@@ -395,7 +420,7 @@ void changeState(RocketState newState)
     if ((newState == NOT_INITIALIZED)
         || (newState == IDLING_OPEN && previousState != SENDING_DATA && previousState != NOT_INITIALIZED && previousState != IDLING_CLOSED)
         || (newState == IDLING_CLOSED && previousState != IDLING_OPEN)
-        || (newState == WAITING_FOR_LAUNCH && previousState != IDLING_CLOSED)
+        || (newState == WAITING_FOR_LAUNCH && previousState != IDLING_CLOSED && previousState != IDLING_OPEN)
         || (newState == ASCENDING && previousState != WAITING_FOR_LAUNCH)
         || (newState == FREE_FALLING && previousState != ASCENDING)
         || (newState == PARACHUTE_FALLING && previousState != FREE_FALLING)
@@ -424,10 +449,11 @@ void changeState(RocketState newState)
         validationBuzzer();
     }
 
-    switch(newState) 
+    switch(newState)
     {
         case ERROR:
             sendRocketState(5);
+            break;
 
         case IDLING_OPEN:
             sendRocketState(5);
@@ -441,10 +467,15 @@ void changeState(RocketState newState)
             launchpadAltitude = pressureSensor.readAltitude();
             break;
 
-        case ASCENDING:
-            copyPrelaunchBufferToFlightBuffer();
+        case WAITING_FOR_LAUNCH:
+            sendRocketState(5);
             WiFi.disconnect();
             launchpadIP = "";
+            break;
+
+        case ASCENDING:
+            ascendingStateEnterTime = millis();
+            copyPrelaunchBufferToFlightBuffer();
             break;
 
         case FREE_FALLING:
@@ -612,7 +643,7 @@ float calculateMagnitude(float x, float y, float z)
     return sqrt(x * x + y * y + z * z);
 }
 
-bool detectApogee(const FlightData &data, unsigned long deltaTime)
+bool detectApogee(const FlightData &data, int deltaTime)
 {
     // Speed calculation (using a circular buffer for smoothing)
 
@@ -634,6 +665,9 @@ bool detectApogee(const FlightData &data, unsigned long deltaTime)
     }
     avgSpeed /= BUFFER_SIZE; // m/s
 
+    Serial.print("Vitesse moyenne : ");
+    Serial.println(avgSpeed);
+
     // Detection of apogee (using a threshold on the speed and altitude)
 
     return avgSpeed <= APOGEE_DETECTION_SPEED_THRESHOLD && APOGEE_DETECTION_ALTITUDE_THRESHOLD <= data.relativeAltitude ;
@@ -641,7 +675,7 @@ bool detectApogee(const FlightData &data, unsigned long deltaTime)
 
 bool shouldOpenParachute(const FlightData &data)
 {
-    return (data.relativeAltitude <= LANDING_DETECTION_ALTITUDE_THRESHOLD);
+    return (data.relativeAltitude <= PARACHUTE_ALTITUDE_THRESHOLD);
 }
 
 void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
@@ -687,8 +721,6 @@ void rocketWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
             changeState(IDLING_OPEN);
         }
     }
-    
-    Serial.printf("[WS] Event type: %d, payload length: %d\n", type, length);
 }
 
 
@@ -775,41 +807,93 @@ bool uploadFlightData(int attempts)
         return false;
     }
 
-    // for (int i = 0; i < attempts; i++)
-    // {
-    //     HTTPClient httpClient;
-    //     String serverPath = "http://" + launchpadIP + "/api/upload-flight-data";
+    Serial.print("Début uploadFlightData. Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+
+    for (int i = 0; i < attempts; i++)
+    {
+        HTTPClient httpClient;
+        String serverPath = "http://" + launchpadIP + "/api/upload-flight-data";
         
-    //     JsonDocument doc;
-    //     doc["flight-data"] = flightBuffer;
-    //     String payload;
-    //     serializeJson(doc, payload);
+        JsonDocument doc;
+        // Make the root of the document an array
+        JsonArray flightDataArray = doc.to<JsonArray>();
+
+        for (int j = 0; j < flightBufferIndex; j++) {
+            JsonObject flightDataObject = flightDataArray.add<JsonObject>();
+            flightDataObject["timestamp"] = flightBuffer[j].timestamp;
+            flightDataObject["temperature"] = flightBuffer[j].temperature;
+            flightDataObject["pressure"] = flightBuffer[j].pressure;
+            flightDataObject["relativeAltitude"] = flightBuffer[j].relativeAltitude;
+            flightDataObject["accelX"] = flightBuffer[j].accelX;
+            flightDataObject["accelY"] = flightBuffer[j].accelY;
+            flightDataObject["accelZ"] = flightBuffer[j].accelZ;
+            flightDataObject["gyroX"] = flightBuffer[j].gyroX;
+            flightDataObject["gyroY"] = flightBuffer[j].gyroY;
+            flightDataObject["gyroZ"] = flightBuffer[j].gyroZ;
+        }
         
-    //     httpClient.begin(serverPath);
-    //     httpClient.addHeader("Content-Type", "application/json");
+        Serial.print("Après population JsonDocument. Free heap: ");
+        Serial.println(ESP.getFreeHeap());
         
-    //     Serial.println("Envoi des données de vol au pas de tir...");
+        String payload;
+        size_t jsonSize = serializeJson(doc, payload);
+        
+        Serial.print("Après serializeJson. Free heap: ");
+        Serial.println(ESP.getFreeHeap());
+        Serial.print("Taille du payload JSON (bytes): ");
+        Serial.println(jsonSize);
+
+        if (jsonSize == 0 && flightBufferIndex > 0) {
+            Serial.println("Erreur: La sérialisation JSON a échoué (payload trop grand ou OOM).");
+            shortErrorBuzzer();
+            delay(1000);
+            continue; 
+        }
+        
+        httpClient.begin(serverPath);
+        httpClient.addHeader("Content-Type", "application/json");
+        
+        Serial.println("Envoi des données de vol au pas de tir...");
     
-    //     int httpResponseCode = httpClient.POST(payload);
-    //     String responsePayload = httpClient.getString();
+        int httpResponseCode = httpClient.POST(payload);
+        String responsePayload = httpClient.getString();
 
-    //     httpClient.end();
+        httpClient.end();
+        
+        Serial.print("Après httpClient.POST. Free heap: ");
+        Serial.println(ESP.getFreeHeap());
     
-    //     if (httpResponseCode == 200) 
-    //     {
-    //         Serial.println("Données de vol envoyées avec succès.");
-    //         return true;
-    //     } 
-    //     else 
-    //     {
-    //         Serial.println("Erreur lors de l'envoi des données de vol au pas de tir : " + String(httpResponseCode) + " " + responsePayload);
-    //     }
+        if (httpResponseCode == 200) 
+        {
+            Serial.println("Données de vol envoyées avec succès.");
+            return true;
+        } 
+        else 
+        {
+            Serial.println("Erreur lors de l'envoi des données de vol au pas de tir : " + String(httpResponseCode) + " " + responsePayload);
+        }
 
-    //     shortErrorBuzzer();
-    //     delay(1000);
-    // }
+        shortErrorBuzzer();
+        delay(1000);
+    }
 
-    // return false;
+    return false;
+}
+
+unsigned long getSamplingIntervalMs() {
+    switch (currentState) {
+        case WAITING_FOR_LAUNCH:
+            return 1000 / HZ_WAITING_FOR_LAUNCH;
+        case ASCENDING:
+            if (millis() - ascendingStateEnterTime < (MAX_ASCENDING_DURATION * 1000)) {
+                return 1000 / HZ_ASCENDING;
+            } else {
+                return 1000 / HZ_DEFAULT;
+            }
+        default: 
+            return 1000 / HZ_DEFAULT;
+    }
 }
 
 void validationBuzzer()

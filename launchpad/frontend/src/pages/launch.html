@@ -12,24 +12,32 @@
     </div>
 </div>
 
-<div class="bg-white rounded-xl p-6 mb-8 shadow">
-    <h2 class="text-2xl font-bold mb-4 text-gray-700">Étape 1 : Lancement</h2>
+<!-- Loading Indicator -->
+<div id="loading-launch-procedure" class="bg-white rounded-xl p-6 mb-8 shadow text-center">
+    <p class="text-gray-700 text-lg">Chargement ...</p>
+</div>
+
+<div id="launch-procedure-section" class="bg-white rounded-xl p-6 mb-8 shadow" style="display: none;">
+    <h2 class="text-2xl font-bold mb-4 text-gray-700">Procédure de lancement</h2>
     
     <div class="mb-6">
         <label class="block text-gray-800 mb-2">Volume d'eau (L)</label>
         <div class="flex items-center">
             <input type="number" id="water-volume" 
                 class="w-20 h-8 bg-white border-2 border-blue-300 text-gray-800 rounded-full px-2 text-center text-sm font-semibold focus:outline-none focus:border-blue-700 z-10"
-                value="0.5" min="0" max="2" step="0.05">
+                value="0.01" min="0.01" max="2" step="0.05">
             <div class="relative flex-1">
                 <div class="relative h-8 -ml-8">
                     <div class="absolute w-full h-8 bg-white rounded-full border-2 border-gray-200"></div>
-                    <div id="water-progress-bar" class="absolute h-8 bg-gradient-to-r from-blue-300 to-blue-600 rounded-full" style="width: 25%"></div>
+                    <div id="water-progress-bar" class="absolute h-8 bg-gradient-to-r from-blue-300 to-blue-600 rounded-full" style="width: 0%"></div>
                     <input type="range" id="water-volume-slider" 
                         class="relative w-full h-8 rounded-full appearance-none cursor-pointer bg-transparent [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-0 [&::-webkit-slider-thumb]:h-0 [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-0 [&::-moz-range-thumb]:h-0 [&::-ms-thumb]:appearance-none [&::-ms-thumb]:w-0 [&::-ms-thumb]:h-0"
-                        value="0.5" min="0" max="2" step="0.01">
+                        value="0.01" min="0.01" max="2" step="0.01">
                 </div>
             </div>
+            <button id="skip-water-button" class="ml-4 bg-gray-400 hover:bg-gray-500 text-white font-bold py-1 px-3 rounded-lg shadow active:scale-95 tranisition-transform scale-100 duration-300 text-xs" style="display: none;">
+                Passer
+            </button>
         </div>
     </div>
     
@@ -38,19 +46,28 @@
         <div class="flex items-center">
             <input type="number" id="pressure" 
                 class="w-20 h-8 bg-white border-2 border-red-300 text-gray-800 rounded-full px-2 text-center text-sm font-semibold focus:outline-none focus:border-red-700 z-10"
-                value="7" min="1" max="10" step="0.5">
+                value="1" min="1" max="10" step="0.5">
             <div class="relative flex-1">
                 <div class="relative h-8 -ml-8">
                     <div class="absolute w-full h-8 bg-white rounded-full border-2 border-gray-200"></div>
-                    <div id="pressure-progress-bar" class="absolute h-8 bg-gradient-to-r from-red-300 to-red-600 rounded-full" style="width: 40%"></div>
+                    <div id="pressure-progress-bar" class="absolute h-8 bg-gradient-to-r from-red-300 to-red-600 rounded-full" style="width: 0%"></div>
                     <input type="range" id="pressure-slider" 
                         class="relative w-full h-8 rounded-full appearance-none cursor-pointer bg-transparent [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-0 [&::-webkit-slider-thumb]:h-0 [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-0 [&::-moz-range-thumb]:h-0 [&::-ms-thumb]:appearance-none [&::-ms-thumb]:w-0 [&::-ms-thumb]:h-0"
-                        value="7" min="1" max="10" step="0.1">
+                        value="1" min="1" max="10" step="0.1">
                 </div>
             </div>
+            <button id="skip-pressure-button" class="ml-4 bg-gray-400 hover:bg-gray-500 text-white font-bold py-1 px-3 rounded-lg shadow active:scale-95 tranisition-transform scale-100 duration-300 text-xs" style="display: none;">
+                Passer
+            </button>
         </div>
     </div>    <div class="flex flex-row gap-4 justify-between">
         <div class="flex flex-row gap-4">
+            <button id="open-fairing-button" class="mt-6 bg-gray-200 hover:bg-gray-300 text-black font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300" style="display: none;">
+                Ouvrir la coiffe
+            </button>
+            <button id="close-fairing-button" class="mt-6 bg-gray-200 hover:bg-gray-300 text-black font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300" style="display: none;">
+                Fermer la coiffe
+            </button>
             <button id="start-filling-button" class="mt-6 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300">
                 Commencer le remplissage
             </button>
@@ -59,38 +76,10 @@
             </button>
         </div>        
         <div class="flex flex-row gap-4">
-            <button id="open-fairing-button" class="mt-6 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300" style="display: none;">
-                Ouvrir la coiffe
-            </button>
-            <button id="close-fairing-button" class="mt-6 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300" style="display: none;">
-                Fermer la coiffe
-            </button>
             <button id="abort-button" class="mt-6 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl shadow active:scale-95 tranisition-transform scale-100 duration-300">
                 Abandonner
             </button>
         </div>
     </div>
     
-</div>
-
-<div class="bg-white rounded-xl p-6 mb-8 shadow">
-    <h2 class="text-2xl font-bold mb-4 text-gray-700">Étape 2 : Récupération des données</h2>
-    
-    <div id="new-data-notification" class="hidden">
-        <div class="bg-green-100 border-l-4 border-green-500 p-4 mb-4">
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <svg class="h-5 w-5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-                    </svg>
-                </div>
-                <div class="ml-3">
-                    <p class="text-sm text-green-700">
-                        Nouvelles données reçues ! Heure du vol : <span id="flight-time" class="font-semibold">--:--</span>, 
-                        Altitude maximale : <span id="max-altitude" class="font-semibold">0.0</span>m
-                    </p>
-                </div>
-            </div>
-        </div>
-    </div>
 </div>

@@ -100,7 +100,8 @@ export const api = {
         return await fetch("/api/launch", {
             method: 'POST'
         });
-    },    async abort()
+    },    
+    async abort()
     {
         return await fetch("/api/abort", {
             method: 'POST'
@@ -115,6 +116,18 @@ export const api = {
 
     async openFairing() {
         return await fetch("/api/open-fairing", {
+            method: 'POST'
+        });
+    },
+
+    async skipWaterFilling() {
+        return await fetch("/api/skip-water-filling", {
+            method: 'POST'
+        });
+    },
+
+    async skipPressurizing() {
+        return await fetch("/api/skip-pressurizing", {
             method: 'POST'
         });
     }
