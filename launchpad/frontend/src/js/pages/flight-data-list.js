@@ -75,7 +75,10 @@ function createFlightElement(timestamp, index) {
                 <h3 class="text-lg font-semibold text-gray-800">Vol #${index + 1}</h3>
                 <p class="text-gray-600">${formattedDate}</p>
             </div>
-            <div class="text-right">
+            <div class="flex items-center gap-2">
+                <button class="download-btn bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm" data-timestamp="${timestamp}">
+                    Download CSV
+                </button>
                 <div class="text-gray-800">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
@@ -84,6 +87,21 @@ function createFlightElement(timestamp, index) {
             </div>
         </div>
     `;
+    
+    // Add download button event listener
+    const downloadBtn = a.querySelector('.download-btn');
+    downloadBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const downloadUrl = `/api/download-flight-csv?timestamp=${timestamp}`;
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = `flight_${timestamp}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    });
     
     return a;
 }

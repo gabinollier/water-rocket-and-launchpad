@@ -18,8 +18,8 @@
 
 const char* wifiSSID = "Pas de tir 🚀";
 const char* wifiPassword = "hippocampe";
-const char* externalWifiSSID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const char* externalWifiPassword = NULL;
+const char* externalWifiSSID = "Livebox-D040";
+const char* externalWifiPassword = "3gr5xvwCHjifSxGSqP";
 const char* dnsName = "launchpad.local"; // on peut mettre autre chose que .local si on veut
 const byte DNS_PORT = 53;
 const float MAX_PRESSURE = 10.0; // bars
@@ -112,7 +112,8 @@ void handleAPIGetWaterVolume();
 void handleAPIGetPressure();
 void handleAPIGetAllFlightTimestamps();
 void handleAPIGetFlightData();
-void handleAPIRotateServo(); 
+void handleAPIDownloadFlightCSV();
+void handleAPIRotateServo();
 
 // WebSocket senders
 void sendWSNewLog(String timestamp, String message);
@@ -471,6 +472,7 @@ void setupAPIEndpoints()
     httpServer.on("/api/get-pressure", HTTP_GET, handleAPIGetPressure);
     httpServer.on("/api/get-all-flight-timestamps", HTTP_GET, handleAPIGetAllFlightTimestamps);
     httpServer.on("/api/get-flight-data", HTTP_GET, handleAPIGetFlightData);
+    httpServer.on("/api/download-flight-csv", HTTP_GET, handleAPIDownloadFlightCSV);
 
     httpServer.on("/api/start-filling", HTTP_POST, handleAPIStartFilling);
     httpServer.on("/api/launch", HTTP_POST, handleAPILaunch);
@@ -661,15 +663,35 @@ void handleAPIGetFlightData()
             }
         }
     }
-    
-    file.close();
+      file.close();
     
     String response;
     serializeJson(doc, response);
     httpServer.send(200, "application/json", response);
 }
 
-void handleAPIStartFilling() 
+void handleAPIDownloadFlightCSV() 
+{
+    if (!httpServer.hasArg("timestamp")) {
+        httpServer.send(400, "text/plain", "timestamp parameter required");
+        return;
+    }
+    
+    String timestamp = httpServer.arg("timestamp");
+    String filename = String(SD_FLIGHT_DATA_DIR) + "/flight_" + timestamp + ".csv";
+    
+    File file = SD.open(filename);
+    if (!file) {
+        httpServer.send(404, "text/plain", "Flight data not found");
+        return;
+    }
+    
+    httpServer.sendHeader("Content-Disposition", "attachment; filename=flight_" + timestamp + ".csv");
+    httpServer.streamFile(file, "text/csv");
+    file.close();
+}
+
+void handleAPIStartFilling()
 {
     if (currentLaunchpadState != IDLING) 
     {

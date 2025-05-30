@@ -5,6 +5,9 @@
   },
   "scripts": {
     "watch:css": "npx @tailwindcss/cli -i tailwind-input.css -o ./src/css/styles.css --watch",
-    "move-build-and-upload-frontend": "cd .. && if exist data rmdir /s /q data && mkdir data && xcopy /E /I /Y frontend\\src\\* data\\ && C:\\Users\\Gabin\\.platformio\\penv\\Scripts\\pio.exe run --target uploadfs"
+    "move-build-and-upload-frontend": "cd .. && if exist data rmdir /s /q data && mkdir data && xcopy /E /I /Y frontend\\src\\* data\\ && mkdir data\\js\\vendor && echo F | xcopy /Y frontend\\node_modules\\chart.js\\dist\\chart.umd.js data\\js\\vendor\\chart.umd.js && C:\\Users\\Gabin\\.platformio\\penv\\Scripts\\pio.exe run --target uploadfs"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.9"
   }
 }

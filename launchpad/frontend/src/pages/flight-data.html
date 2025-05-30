@@ -1,5 +1,52 @@
 <div class="max-w-7xl mx-auto">
-    <h1 class="text-3xl font-bold text-gray-800 mb-6">Flight Data</h1>
+    <div class="flex justify-between items-center mb-6">
+        <h1 id="title" class="text-3xl font-bold text-gray-800">Données de Vol</h1>
+        <button id="download-btn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded hidden">
+            Télécharger CSV
+        </button>
+    </div>
+
+    <div id="flight-metrics" class="mb-6">
+        
+    </div>    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Altitude en fonction du temps</h2>
+        <div class="relative h-96">
+            <canvas id="altitude-chart"></canvas>
+        </div>
+    </div>
+
     <div class="bg-white p-6 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Vitesse verticale en fonction du temps</h2>
+        <div class="relative h-96">
+            <canvas id="velocity-chart"></canvas>
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg shadow-md mt-6">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Accélération en fonction du temps</h2>
+        <div class="relative h-96">
+            <canvas id="acceleration-chart"></canvas>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Vitesse angulaire (Gyro)</h2>
+            <div class="relative h-96">
+                <canvas id="gyro-chart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Température</h2>
+            <div class="relative h-96">
+                <canvas id="temperature-chart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Pression</h2>
+            <div class="relative h-96">
+                <canvas id="pressure-chart"></canvas>
+            </div>
+        </div>
     </div>
 </div>
